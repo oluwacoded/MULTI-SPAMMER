@@ -26,14 +26,25 @@ export type BotStatusMe = {
   name?: string | null;
 } | null;
 
+export interface CampaignLogEntry {
+  phone: string;
+  name: string;
+  status: 'sent' | 'no_telegram' | 'error' | 'flood_wait' | 'pending';
+  error?: string;
+  at?: number;
+}
+
 export interface CampaignStatus {
   active: boolean;
   total?: number;
   sent?: number;
   failed?: number;
+  noTelegram?: number;
   percent?: number;
   elapsed?: number;
   remain?: number;
+  floodWait?: number;
+  log?: CampaignLogEntry[];
 }
 
 export interface SmsCampaignStatus {
@@ -121,6 +132,13 @@ export interface SmsHistoryList {
 export interface CampaignStartInput {
   contacts: Contact[];
   message: string;
+  minDelay?: number;
+  maxDelay?: number;
+  batchSize?: number;
+  batchPauseMin?: number;
+  typingDelay?: boolean;
+  autoVariation?: boolean;
+  dailyLimit?: number;
 }
 
 export interface LoginStartInput {

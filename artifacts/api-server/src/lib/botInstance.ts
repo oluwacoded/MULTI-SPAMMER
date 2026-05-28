@@ -44,6 +44,12 @@ WHEN UNSURE: Be short, lowercase, casual. One word answers are fine.`
 };
 
 const CAMPAIGN_RATE = 25;
+
+const VARIATION_CHARS = ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"];
+function addVariation(msg: string): string {
+  const ch = VARIATION_CHARS[Math.floor(Math.random() * VARIATION_CHARS.length)];
+  return msg + ch;
+}
 const SCAM_PATTERNS = [
   /invest(ment)?\s*(opportunity|platform|scheme)/i,
   /double your (money|investment|bitcoin)/i,
@@ -78,7 +84,7 @@ class TelegramBotEngine {
   private activePersona = new Map<string, string>();
   private rateLimitMap = new Map<string, any>();
   private pending: { phoneCode: ((v: string) => void) | null; password: ((v: string) => void) | null } = { phoneCode: null, password: null };
-  private campaign: any = { active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, startTime: null, timer: null, onUpdate: null, delayMs: 2400 };
+  private campaign: any = { active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, noTelegram: 0, startTime: null, timer: null, onUpdate: null, delayMs: 2400, log: [], batchCount: 0, floodWait: 0, options: {} };
 
   constructor() {
     this.settings = { ...SETTINGS_DEFAULTS, ...readJSON("settings.json", {}) };
@@ -192,14 +198,22 @@ class TelegramBotEngine {
   }
 
   getCampaignStatus() {
-    if (!this.campaign.active) return { active: false };
+    if (!this.campaign.active && !this.campaign.log?.length) return { active: false };
     const total = this.campaign.contacts.length;
-    const done = this.campaign.sent + this.campaign.failed;
+    const done = this.campaign.sent + this.campaign.failed + this.campaign.noTelegram;
+    const opts = this.campaign.options || {};
+    const avgDelay = ((opts.minDelay || 3) + (opts.maxDelay || 8)) / 2;
     return {
-      active: true, total, sent: this.campaign.sent, failed: this.campaign.failed,
-      elapsed: Math.round((Date.now() - this.campaign.startTime) / 60000),
-      remain: Math.ceil((total - done) / CAMPAIGN_RATE),
-      percent: Math.round(done / total * 100)
+      active: this.campaign.active,
+      total,
+      sent: this.campaign.sent,
+      failed: this.campaign.failed,
+      noTelegram: this.campaign.noTelegram,
+      elapsed: this.campaign.startTime ? Math.round((Date.now() - this.campaign.startTime) / 60000) : 0,
+      remain: total > done ? Math.ceil((total - done) * avgDelay / 60) : 0,
+      percent: total > 0 ? Math.round(done / total * 100) : 0,
+      floodWait: this.campaign.floodWait || 0,
+      log: (this.campaign.log || []).slice(-200)
     };
   }
 
@@ -209,42 +223,65 @@ class TelegramBotEngine {
     this.campaign.active = false;
   }
 
-  async startCampaignFromAPI(contacts: any[], message: string) {
+  async startCampaignFromAPI(contacts: any[], message: string, options: any = {}) {
     if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram");
     if (this.campaign.active) throw new Error("A campaign is already running");
     if (!contacts.length) throw new Error("No contacts");
+    const opts = {
+      minDelay: options.minDelay ?? 3,
+      maxDelay: options.maxDelay ?? 8,
+      batchSize: options.batchSize ?? 20,
+      batchPauseMin: options.batchPauseMin ?? 5,
+      typingDelay: options.typingDelay ?? false,
+      autoVariation: options.autoVariation ?? true,
+      dailyLimit: options.dailyLimit ?? 0,
+    };
     this.campaign = {
-      active: true, contacts, index: 0, message, sent: 0, failed: 0,
+      active: true, contacts, index: 0, message, sent: 0, failed: 0, noTelegram: 0,
       startTime: Date.now(), timer: null,
       onUpdate: (t: string) => console.log("[Campaign]", t),
-      delayMs: Math.ceil(60000 / CAMPAIGN_RATE)
+      delayMs: opts.minDelay * 1000,
+      log: [], batchCount: 0, floodWait: 0, options: opts,
+      dailySent: 0
     };
     this._campaignNext();
   }
 
   private _campaignNext() {
     if (!this.campaign.active) return;
-    const { contacts, index, message, onUpdate } = this.campaign;
+    const { contacts, index, message, onUpdate, options } = this.campaign;
     if (index >= contacts.length) {
       this.campaign.active = false;
-      onUpdate?.(`✅ Campaign Complete! Sent: ${this.campaign.sent}, Failed: ${this.campaign.failed}`);
+      onUpdate?.(`✅ Complete! Sent: ${this.campaign.sent}, No TG: ${this.campaign.noTelegram}, Failed: ${this.campaign.failed}`);
+      return;
+    }
+    if (options.dailyLimit > 0 && this.campaign.dailySent >= options.dailyLimit) {
+      this.campaign.active = false;
+      onUpdate?.(`⏹ Daily limit reached (${options.dailyLimit})`);
       return;
     }
     const { phone, name } = contacts[index];
     this.campaign.index++;
-    const personalised = message.replace(/\{name\}/gi, name).replace(/\{phone\}/gi, phone);
+    let personalised = message.replace(/\{name\}/gi, name || "").replace(/\{phone\}/gi, phone);
+    if (options.autoVariation) personalised = addVariation(personalised);
 
     (async () => {
-      let delayMs = this.campaign.delayMs;
+      const minMs = (options.minDelay || 3) * 1000;
+      const maxMs = (options.maxDelay || 8) * 1000;
+      const randomDelay = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+      const logEntry: any = { phone, name, status: "pending", at: Date.now() };
+      this.campaign.log.push(logEntry);
+      if (this.campaign.log.length > 500) this.campaign.log = this.campaign.log.slice(-500);
+
       try {
-        // Use ImportContacts — designed for phone→user resolution, no GetContacts flood wait
         const { Api } = await import("telegram");
         const cleanPhone = phone.replace(/\D/g, "").replace(/^0+/, "");
+        const normalised = cleanPhone.startsWith("+") ? cleanPhone : "+" + cleanPhone;
         const imported: any = await this.tgClient!.invoke(
           new Api.contacts.ImportContacts({
             contacts: [new Api.InputPhoneContact({
               clientId: BigInt(index),
-              phone: cleanPhone.startsWith("+") ? cleanPhone : "+" + cleanPhone,
+              phone: normalised,
               firstName: name || "User",
               lastName: "",
             })],
@@ -252,26 +289,54 @@ class TelegramBotEngine {
         );
         const user = imported?.users?.[0];
         if (user) {
+          if (options.typingDelay) {
+            try {
+              await this.tgClient!.invoke(new Api.messages.SetTyping({ peer: user, action: new Api.SendMessageTypingAction() }));
+              await new Promise(r => setTimeout(r, Math.floor(Math.random() * 2000) + 1000));
+            } catch {}
+          }
           await this.tgClient!.sendMessage(user, { message: personalised });
           this.campaign.sent++;
+          this.campaign.dailySent++;
+          logEntry.status = "sent";
+          logEntry.at = Date.now();
         } else {
-          // Not on Telegram — skip silently
-          this.campaign.failed++;
+          this.campaign.noTelegram++;
+          logEntry.status = "no_telegram";
+          logEntry.at = Date.now();
         }
       } catch (e: any) {
         const errMsg = e?.errorMessage || e?.message || "";
         if (errMsg.includes("FLOOD_WAIT") || e?.seconds) {
-          const waitSec = e.seconds || 30;
+          const waitSec = e.seconds || 60;
           console.log(`[Campaign] Flood wait ${waitSec}s — pausing`);
-          // Back-index so this contact is retried
+          this.campaign.floodWait = waitSec;
           this.campaign.index--;
-          this.campaign.timer = setTimeout(() => this._campaignNext(), waitSec * 1000 + 2000);
+          logEntry.status = "flood_wait";
+          logEntry.error = `Flood wait ${waitSec}s`;
+          this.campaign.log.pop();
+          this.campaign.timer = setTimeout(() => {
+            this.campaign.floodWait = 0;
+            this._campaignNext();
+          }, waitSec * 1000 + 2000);
           return;
         }
         this.campaign.failed++;
-        console.log(`[Campaign] Failed → ${phone}: ${errMsg}`);
+        logEntry.status = "error";
+        logEntry.error = errMsg.slice(0, 80);
+        logEntry.at = Date.now();
+        console.log(`[Campaign] Error → ${phone}: ${errMsg}`);
       }
-      this.campaign.timer = setTimeout(() => this._campaignNext(), delayMs);
+
+      this.campaign.batchCount++;
+      if (options.batchSize > 0 && this.campaign.batchCount >= options.batchSize) {
+        this.campaign.batchCount = 0;
+        const pauseMs = (options.batchPauseMin || 5) * 60 * 1000;
+        console.log(`[Campaign] Batch pause ${options.batchPauseMin}min`);
+        this.campaign.timer = setTimeout(() => this._campaignNext(), pauseMs);
+      } else {
+        this.campaign.timer = setTimeout(() => this._campaignNext(), randomDelay);
+      }
     })();
   }
 
