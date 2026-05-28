@@ -1,14 +1,20 @@
 import { useState, useRef } from "react";
 import { useGetCampaignStatus, useStartCampaignApi, useStopCampaignApi, getGetCampaignStatusQueryKey } from "@workspace/api-client-react";
+import type { CampaignLogEntry } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import Layout from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, Play, Square, Users, MessageSquare, Info } from "lucide-react";
+import { Upload, Play, Square, Users, MessageSquare, Info, Wand2, Globe, ClipboardList, ChevronDown, ChevronUp, Shield, CheckCircle2, XCircle, Clock, AlertTriangle, Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 function parseVCF(text: string): Array<{ phone: string; name: string }> {
   const contacts: Array<{ phone: string; name: string }> = [];
@@ -29,13 +35,38 @@ function parsePhoneList(text: string): Array<{ phone: string; name: string }> {
     phone = phone.replace(/[^\d+]/g, "");
     if (!phone.startsWith("+")) phone = "+" + phone;
     return { phone, name: phone };
-  });
+  }).filter(c => c.phone.length >= 8);
 }
+
+const STATUS_CONFIG = {
+  sent:        { label: "Sent",          icon: CheckCircle2,  color: "text-green-500",  bg: "bg-green-500/10 border-green-500/20" },
+  no_telegram: { label: "Not on TG",     icon: XCircle,       color: "text-yellow-500", bg: "bg-yellow-500/10 border-yellow-500/20" },
+  error:       { label: "Error",         icon: AlertTriangle, color: "text-red-500",    bg: "bg-red-500/10 border-red-500/20" },
+  flood_wait:  { label: "Flood Wait",    icon: Clock,         color: "text-orange-500", bg: "bg-orange-500/10 border-orange-500/20" },
+  pending:     { label: "Pending",       icon: Loader2,       color: "text-blue-400",   bg: "bg-blue-500/10 border-blue-500/20" },
+} as const;
 
 export default function TgCampaign() {
   const [contacts, setContacts] = useState<Array<{ phone: string; name: string }>>([]);
   const [message, setMessage] = useState("Hey {name}! 👋");
   const [rawInput, setRawInput] = useState("");
+  const [generateDialog, setGenerateDialog] = useState(false);
+  const [scraping, setScraping] = useState(false);
+  const [scrapeCount, setScrapeCount] = useState("50");
+  const [showAntiBan, setShowAntiBan] = useState(false);
+  const [showLog, setShowLog] = useState(false);
+  const [logFilter, setLogFilter] = useState<string>("all");
+
+  const [antiBan, setAntiBan] = useState({
+    minDelay: 3,
+    maxDelay: 8,
+    batchSize: 20,
+    batchPauseMin: 5,
+    typingDelay: false,
+    autoVariation: true,
+    dailyLimit: 0,
+  });
+
   const fileRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -60,15 +91,38 @@ export default function TgCampaign() {
   const handleRawParse = () => {
     const parsed = parsePhoneList(rawInput);
     setContacts(parsed);
-    toast({ title: `Parsed ${parsed.length} contacts` });
+    if (parsed.length > 0) toast({ title: `Parsed ${parsed.length} contacts` });
+    else toast({ title: "No valid numbers found", variant: "destructive" });
+  };
+
+  const handleScrape = async () => {
+    setScraping(true);
+    try {
+      const resp = await fetch(`/api/scrape/us-phones?count=${scrapeCount}`);
+      const data = await resp.json();
+      const parsed = (data.phones as string[]).map(p => ({ phone: p, name: p }));
+      setContacts(parsed);
+      setGenerateDialog(false);
+      toast({
+        title: `${parsed.length} numbers loaded`,
+        description: data.source === "coolgenerator.com"
+          ? "Pulled from coolgenerator.com"
+          : "Generated locally (site unavailable)"
+      });
+    } catch {
+      toast({ title: "Failed to fetch numbers", variant: "destructive" });
+    } finally {
+      setScraping(false);
+    }
   };
 
   const handleStart = () => {
     if (!contacts.length) { toast({ title: "No contacts", description: "Load contacts first", variant: "destructive" }); return; }
     if (!message.trim()) { toast({ title: "No message", description: "Enter a message", variant: "destructive" }); return; }
-    startCampaign.mutate({ data: { contacts, message } }, {
+    startCampaign.mutate({ data: { contacts, message, ...antiBan } }, {
       onSuccess: (res) => {
         if (res.ok) {
+          setShowLog(true);
           qc.invalidateQueries({ queryKey: getGetCampaignStatusQueryKey() });
           toast({ title: "Campaign started!", description: `Sending to ${contacts.length} contacts` });
         } else {
@@ -90,15 +144,23 @@ export default function TgCampaign() {
     });
   };
 
+  const log: CampaignLogEntry[] = status?.log || [];
+  const filteredLog = logFilter === "all" ? log : log.filter(e => e.status === logFilter);
+
+  const sentCount = log.filter(e => e.status === "sent").length;
+  const noTgCount = log.filter(e => e.status === "no_telegram").length;
+  const errorCount = log.filter(e => e.status === "error").length;
+  const pendingCount = log.filter(e => e.status === "pending").length;
+
   return (
     <Layout>
       <div className="p-4 md:p-6 max-w-2xl mx-auto space-y-4 md:space-y-5">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Telegram Campaign</h1>
-          <p className="text-sm text-muted-foreground mt-1">Bulk DM to thousands via VCF or phone list</p>
+          <p className="text-sm text-muted-foreground mt-1">Bulk DM to thousands via VCF, phone list, or generated numbers</p>
         </div>
 
-        {/* Status */}
+        {/* Active campaign status bar */}
         {status?.active && (
           <Card className="border-primary/30 bg-primary/5">
             <CardContent className="p-4 space-y-3">
@@ -106,19 +168,116 @@ export default function TgCampaign() {
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
                   <p className="text-sm font-semibold text-foreground">Campaign Running</p>
+                  {(status.floodWait ?? 0) > 0 && (
+                    <Badge variant="outline" className="text-orange-400 border-orange-400/40 text-xs">
+                      Flood wait {status.floodWait}s
+                    </Badge>
+                  )}
                 </div>
                 <Badge>{status.percent ?? 0}%</Badge>
               </div>
               <Progress value={status.percent ?? 0} className="h-2" />
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span>✔ {status.sent} sent | ✖ {status.failed} failed</span>
-                <span>~{status.remain} min left</span>
+              <div className="grid grid-cols-4 gap-2 text-center text-xs">
+                <div className="rounded-md bg-green-500/10 border border-green-500/20 p-1.5">
+                  <p className="font-bold text-green-400">{status.sent ?? 0}</p>
+                  <p className="text-muted-foreground">Sent</p>
+                </div>
+                <div className="rounded-md bg-yellow-500/10 border border-yellow-500/20 p-1.5">
+                  <p className="font-bold text-yellow-400">{status.noTelegram ?? 0}</p>
+                  <p className="text-muted-foreground">No TG</p>
+                </div>
+                <div className="rounded-md bg-red-500/10 border border-red-500/20 p-1.5">
+                  <p className="font-bold text-red-400">{status.failed ?? 0}</p>
+                  <p className="text-muted-foreground">Error</p>
+                </div>
+                <div className="rounded-md bg-muted/50 p-1.5">
+                  <p className="font-bold text-muted-foreground">{(status.total ?? 0) - (status.sent ?? 0) - (status.noTelegram ?? 0) - (status.failed ?? 0)}</p>
+                  <p className="text-muted-foreground">Left</p>
+                </div>
               </div>
-              <Button variant="destructive" size="sm" onClick={handleStop} disabled={stopCampaign.isPending} data-testid="button-stop-campaign" className="w-full">
-                <Square className="w-3.5 h-3.5 mr-1.5" />
-                Stop Campaign
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => setShowLog(v => !v)}
+                >
+                  {showLog ? "Hide Log" : "Show Log"}
+                </Button>
+                <Button variant="destructive" size="sm" onClick={handleStop} disabled={stopCampaign.isPending} className="flex-1">
+                  <Square className="w-3.5 h-3.5 mr-1.5" />
+                  Stop
+                </Button>
+              </div>
             </CardContent>
+          </Card>
+        )}
+
+        {/* Campaign log */}
+        {(showLog || (!status?.active && log.length > 0)) && (
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <ClipboardList className="w-4 h-4" /> Delivery Log
+                </CardTitle>
+                <button onClick={() => setShowLog(v => !v)} className="text-muted-foreground hover:text-foreground">
+                  {showLog ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+              </div>
+              {log.length > 0 && (
+                <div className="flex gap-1.5 flex-wrap mt-1">
+                  {["all", "sent", "no_telegram", "error", "pending"].map(f => (
+                    <button
+                      key={f}
+                      onClick={() => setLogFilter(f)}
+                      className={cn(
+                        "px-2 py-0.5 rounded-full text-xs border transition-colors",
+                        logFilter === f
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "border-border text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {f === "all" ? `All (${log.length})` :
+                       f === "sent" ? `✓ Sent (${sentCount})` :
+                       f === "no_telegram" ? `✗ No TG (${noTgCount})` :
+                       f === "error" ? `⚠ Error (${errorCount})` :
+                       `⏳ Pending (${pendingCount})`}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </CardHeader>
+            {showLog && (
+              <CardContent className="p-0">
+                <div className="max-h-72 overflow-y-auto divide-y divide-border">
+                  {filteredLog.length === 0 && (
+                    <p className="text-xs text-muted-foreground text-center py-6">No entries yet</p>
+                  )}
+                  {filteredLog.slice().reverse().map((entry, i) => {
+                    const cfg = STATUS_CONFIG[entry.status] || STATUS_CONFIG.pending;
+                    const Icon = cfg.icon;
+                    return (
+                      <div key={i} className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/30">
+                        <Icon className={cn("w-3.5 h-3.5 shrink-0", cfg.color, entry.status === "pending" && "animate-spin")} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-mono text-foreground truncate">{entry.phone}</p>
+                          {entry.name && entry.name !== entry.phone && (
+                            <p className="text-xs text-muted-foreground truncate">{entry.name}</p>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className={cn("text-xs font-medium", cfg.color)}>{cfg.label}</span>
+                          {entry.error && (
+                            <p className="text-xs text-muted-foreground truncate max-w-[120px]">{entry.error}</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            )}
           </Card>
         )}
 
@@ -126,24 +285,29 @@ export default function TgCampaign() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2"><Users className="w-4 h-4" /> Contacts</CardTitle>
-            <CardDescription>Import a .vcf file, .csv, or paste phone numbers</CardDescription>
+            <CardDescription>Import VCF, CSV, paste numbers, or generate US phone numbers</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <input ref={fileRef} type="file" accept=".vcf,.csv,.txt" className="hidden" onChange={handleFile} data-testid="input-file-contacts" />
-            <Button variant="outline" className="w-full" onClick={() => fileRef.current?.click()} data-testid="button-upload-vcf">
-              <Upload className="w-4 h-4 mr-2" />
-              Upload VCF / CSV file
-            </Button>
-            <div className="relative">
+            <input ref={fileRef} type="file" accept=".vcf,.csv,.txt" className="hidden" onChange={handleFile} />
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="outline" className="w-full" onClick={() => fileRef.current?.click()}>
+                <Upload className="w-4 h-4 mr-2" />
+                Upload VCF / CSV
+              </Button>
+              <Button variant="outline" className="w-full" onClick={() => setGenerateDialog(true)}>
+                <Wand2 className="w-4 h-4 mr-2" />
+                Generate Numbers
+              </Button>
+            </div>
+            <div>
               <p className="text-xs text-muted-foreground mb-1.5">Or paste phone numbers (one per line)</p>
               <Textarea
-                data-testid="input-phone-list"
                 placeholder="+2349012345678&#10;+2348012345678&#10;+447911123456"
                 value={rawInput}
                 onChange={e => setRawInput(e.target.value)}
-                className="font-mono text-xs h-24 resize-none"
+                className="font-mono text-xs h-20 resize-none"
               />
-              <Button size="sm" variant="secondary" className="mt-2" onClick={handleRawParse} data-testid="button-parse-phones">
+              <Button size="sm" variant="secondary" className="mt-2" onClick={handleRawParse}>
                 Parse Numbers
               </Button>
             </div>
@@ -151,6 +315,10 @@ export default function TgCampaign() {
               <div className="flex items-center gap-2 p-2 rounded-md bg-green-500/10 border border-green-500/20">
                 <Users className="w-3.5 h-3.5 text-green-500" />
                 <p className="text-xs text-green-500 font-medium">{contacts.length} contacts loaded</p>
+                <button
+                  className="ml-auto text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setContacts([])}
+                >Clear</button>
               </div>
             )}
           </CardContent>
@@ -163,7 +331,6 @@ export default function TgCampaign() {
           </CardHeader>
           <CardContent className="space-y-3">
             <Textarea
-              data-testid="input-campaign-message"
               value={message}
               onChange={e => setMessage(e.target.value)}
               className="h-28 resize-none"
@@ -172,10 +339,116 @@ export default function TgCampaign() {
             <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50">
               <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
               <p className="text-xs text-muted-foreground">
-                Use <code className="bg-muted px-1 rounded">{"{name}"}</code> and <code className="bg-muted px-1 rounded">{"{phone}"}</code> for personalisation. Rate: 25 msgs/min.
+                Use <code className="bg-muted px-1 rounded">{"{name}"}</code> and <code className="bg-muted px-1 rounded">{"{phone}"}</code> for personalisation.
               </p>
             </div>
           </CardContent>
+        </Card>
+
+        {/* Anti-Ban Settings */}
+        <Card>
+          <CardHeader
+            className="pb-3 cursor-pointer select-none"
+            onClick={() => setShowAntiBan(v => !v)}
+          >
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Shield className="w-4 h-4 text-green-500" /> Anti-Ban Settings
+              </CardTitle>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-green-500">Active</span>
+                {showAntiBan ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+              </div>
+            </div>
+            {!showAntiBan && (
+              <p className="text-xs text-muted-foreground mt-1">
+                Delay: {antiBan.minDelay}–{antiBan.maxDelay}s · Batch: {antiBan.batchSize} msgs/{antiBan.batchPauseMin}min pause · Variation: {antiBan.autoVariation ? "on" : "off"}
+              </p>
+            )}
+          </CardHeader>
+          {showAntiBan && (
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Min delay (sec)</Label>
+                  <Input
+                    type="number" min={1} max={60}
+                    value={antiBan.minDelay}
+                    onChange={e => setAntiBan(p => ({ ...p, minDelay: parseInt(e.target.value) || 3 }))}
+                    className="h-8 text-sm"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Max delay (sec)</Label>
+                  <Input
+                    type="number" min={1} max={120}
+                    value={antiBan.maxDelay}
+                    onChange={e => setAntiBan(p => ({ ...p, maxDelay: parseInt(e.target.value) || 8 }))}
+                    className="h-8 text-sm"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Batch size (msgs)</Label>
+                  <Input
+                    type="number" min={1} max={200}
+                    value={antiBan.batchSize}
+                    onChange={e => setAntiBan(p => ({ ...p, batchSize: parseInt(e.target.value) || 20 }))}
+                    className="h-8 text-sm"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Batch pause (min)</Label>
+                  <Input
+                    type="number" min={1} max={60}
+                    value={antiBan.batchPauseMin}
+                    onChange={e => setAntiBan(p => ({ ...p, batchPauseMin: parseInt(e.target.value) || 5 }))}
+                    className="h-8 text-sm"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Daily limit (0 = off)</Label>
+                  <Input
+                    type="number" min={0} max={10000}
+                    value={antiBan.dailyLimit}
+                    onChange={e => setAntiBan(p => ({ ...p, dailyLimit: parseInt(e.target.value) || 0 }))}
+                    className="h-8 text-sm"
+                  />
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm">Auto-variation</Label>
+                    <p className="text-xs text-muted-foreground">Adds invisible unicode chars to each message to avoid spam detection</p>
+                  </div>
+                  <Switch
+                    checked={antiBan.autoVariation}
+                    onCheckedChange={v => setAntiBan(p => ({ ...p, autoVariation: v }))}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm">Typing simulation</Label>
+                    <p className="text-xs text-muted-foreground">Shows "typing…" indicator before each message is sent</p>
+                  </div>
+                  <Switch
+                    checked={antiBan.typingDelay}
+                    onCheckedChange={v => setAntiBan(p => ({ ...p, typingDelay: v }))}
+                  />
+                </div>
+              </div>
+              <div className="p-2 rounded-md bg-muted/40 space-y-1">
+                <p className="text-xs font-medium text-foreground">Recommended safe settings</p>
+                <p className="text-xs text-muted-foreground">Delay 5–12s · Batches of 15 with 10 min pause · Auto-variation on · Daily limit 200</p>
+                <Button
+                  size="sm" variant="outline" className="mt-1 h-7 text-xs"
+                  onClick={() => setAntiBan({ minDelay: 5, maxDelay: 12, batchSize: 15, batchPauseMin: 10, typingDelay: true, autoVariation: true, dailyLimit: 200 })}
+                >
+                  Apply safe preset
+                </Button>
+              </div>
+            </CardContent>
+          )}
         </Card>
 
         <Button
@@ -183,11 +456,62 @@ export default function TgCampaign() {
           size="lg"
           onClick={handleStart}
           disabled={startCampaign.isPending || status?.active || !contacts.length}
-          data-testid="button-start-tg-campaign"
         >
           <Play className="w-4 h-4 mr-2" />
           {startCampaign.isPending ? "Starting..." : `Send to ${contacts.length || "?"} Contacts`}
         </Button>
+
+        {/* Generate numbers dialog */}
+        <Dialog open={generateDialog} onOpenChange={setGenerateDialog}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Wand2 className="w-4 h-4" /> Get Phone Numbers
+              </DialogTitle>
+              <DialogDescription>
+                Choose how you want to get US phone numbers for your campaign.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 pt-2">
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">How many numbers?</Label>
+                <Input
+                  type="number" min={10} max={500}
+                  value={scrapeCount}
+                  onChange={e => setScrapeCount(e.target.value)}
+                  className="h-8 text-sm"
+                />
+              </div>
+
+              <button
+                className="w-full flex items-start gap-3 p-3 rounded-lg border border-border hover:border-primary/50 hover:bg-primary/5 transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={handleScrape}
+                disabled={scraping}
+              >
+                <Globe className="w-5 h-5 text-primary shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">Pull from coolgenerator.com</p>
+                  <p className="text-xs text-muted-foreground">Fetch numbers from the US phone number generator website</p>
+                </div>
+                {scraping && <Loader2 className="w-4 h-4 animate-spin ml-auto shrink-0 mt-0.5 text-primary" />}
+              </button>
+
+              <button
+                className="w-full flex items-start gap-3 p-3 rounded-lg border border-border hover:border-primary/50 hover:bg-primary/5 transition-colors text-left"
+                onClick={() => {
+                  setGenerateDialog(false);
+                  setTimeout(() => document.querySelector<HTMLTextAreaElement>("[placeholder*='+230']")?.focus(), 100);
+                }}
+              >
+                <ClipboardList className="w-5 h-5 text-muted-foreground shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">I'll paste my own numbers</p>
+                  <p className="text-xs text-muted-foreground">Paste a list of numbers or upload a VCF / CSV file</p>
+                </div>
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </Layout>
   );
