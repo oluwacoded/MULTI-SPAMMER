@@ -1,16 +1,75 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Send, MessageSquare, Zap, Settings, LogIn, Radio, Menu, X } from "lucide-react";
+import { LayoutDashboard, Send, MessageSquare, Zap, Settings, LogIn, Radio, Menu, X, BookUser, History, Server, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useGetBotStatus } from "@workspace/api-client-react";
+import { setBaseUrl } from "@workspace/api-client-react";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/tg-campaign", label: "TG Campaign", icon: Send },
+  { href: "/campaign-history", label: "History", icon: History },
+  { href: "/contact-lists", label: "Contact Lists", icon: BookUser },
   { href: "/sms-campaign", label: "SMS Campaign", icon: MessageSquare },
   { href: "/sms-flash", label: "SMS Flash", icon: Zap },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
+
+function ServerUrlBar() {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(() => localStorage.getItem("mfg_api_base") || "");
+  const [saved, setSaved] = useState(false);
+
+  const save = () => {
+    const trimmed = val.trim().replace(/\/+$/, "");
+    if (trimmed) {
+      localStorage.setItem("mfg_api_base", trimmed);
+      setBaseUrl(trimmed);
+    } else {
+      localStorage.removeItem("mfg_api_base");
+      setBaseUrl(null);
+    }
+    setEditing(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const currentUrl = localStorage.getItem("mfg_api_base");
+
+  if (editing) {
+    return (
+      <div className="px-3 py-2">
+        <p className="text-xs text-muted-foreground mb-1">API Server URL</p>
+        <div className="flex gap-1">
+          <input
+            autoFocus
+            value={val}
+            onChange={e => setVal(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+            placeholder="https://your-server.com"
+            className="flex-1 text-xs bg-muted border border-border rounded px-2 py-1 text-foreground min-w-0 outline-none focus:border-primary"
+          />
+          <button onClick={save} className="text-xs bg-primary text-primary-foreground rounded px-2 py-1 shrink-0">OK</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => { setVal(currentUrl || ""); setEditing(true); }}
+      className="w-full flex items-center gap-2 px-3 py-2 rounded-md hover:bg-sidebar-accent transition-colors text-left"
+    >
+      <Server className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+      <div className="flex-1 min-w-0">
+        <p className="text-xs text-muted-foreground truncate">
+          {currentUrl ? currentUrl.replace(/^https?:\/\//, "").slice(0, 28) : "Local server"}
+        </p>
+      </div>
+      {saved && <Check className="w-3 h-3 text-green-500 shrink-0" />}
+    </button>
+  );
+}
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
@@ -30,7 +89,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <p className="text-xs text-muted-foreground mt-0.5">by teddymfg</p>
           </div>
         </div>
-        {/* Close button on mobile */}
         <button
           className="md:hidden text-muted-foreground hover:text-foreground transition-colors p-1"
           onClick={() => setOpen(false)}
@@ -83,16 +141,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </nav>
 
       {/* Footer */}
-      <div className="p-4 border-t border-sidebar-border">
+      <div className="border-t border-sidebar-border">
+        <ServerUrlBar />
         {!status?.connected && (
-          <Link href="/login" onClick={() => setOpen(false)}>
-            <div className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-primary hover:bg-sidebar-accent cursor-pointer transition-colors">
-              <LogIn className="w-4 h-4" />
-              Login to Telegram
-            </div>
-          </Link>
+          <div className="px-2 pb-2">
+            <Link href="/login" onClick={() => setOpen(false)}>
+              <div className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-primary hover:bg-sidebar-accent cursor-pointer transition-colors">
+                <LogIn className="w-4 h-4" />
+                Login to Telegram
+              </div>
+            </Link>
+          </div>
         )}
-        <p className="text-xs text-muted-foreground mt-2 px-1">
+        <p className="text-xs text-muted-foreground pb-3 px-4">
           {status?.uptime !== undefined
             ? `Uptime: ${Math.floor(status.uptime / 3600)}h ${Math.floor((status.uptime % 3600) / 60)}m`
             : ""}
