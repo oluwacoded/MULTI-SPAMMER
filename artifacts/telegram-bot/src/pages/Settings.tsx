@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useGetSettings, useUpdateSettings, getGetSettingsQueryKey } from "@workspace/api-client-react";
+import { useGetSettings, useUpdateSettings, getGetSettingsQueryKey, setBaseUrl } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import Layout from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -10,7 +10,109 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Bot, Shield, Mic, Eye, MessageCircle, Settings2, Zap, Save } from "lucide-react";
+import { Bot, Shield, Mic, Eye, MessageCircle, Settings2, Zap, Save, Server, Plus, Trash2, Check } from "lucide-react";
+
+function ApiServersCard() {
+  const { toast } = useToast();
+  const [servers, setServers] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("mfg_api_servers") || "[]"); } catch { return []; }
+  });
+  const [current, setCurrent] = useState(() => localStorage.getItem("mfg_api_base") || "");
+  const [newUrl, setNewUrl] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const apply = (url: string) => {
+    const trimmed = url.trim().replace(/\/+$/, "");
+    if (trimmed) {
+      localStorage.setItem("mfg_api_base", trimmed);
+      setBaseUrl(trimmed);
+    } else {
+      localStorage.removeItem("mfg_api_base");
+      setBaseUrl(null);
+    }
+    setCurrent(trimmed);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+    toast({ title: trimmed ? `Now using: ${trimmed}` : "Using local server" });
+  };
+
+  const addServer = () => {
+    const trimmed = newUrl.trim().replace(/\/+$/, "");
+    if (!trimmed) return;
+    const next = [...new Set([...servers, trimmed])];
+    setServers(next);
+    localStorage.setItem("mfg_api_servers", JSON.stringify(next));
+    apply(trimmed);
+    setNewUrl("");
+  };
+
+  const removeServer = (url: string) => {
+    const next = servers.filter(s => s !== url);
+    setServers(next);
+    localStorage.setItem("mfg_api_servers", JSON.stringify(next));
+    if (current === url) apply("");
+  };
+
+  const allOptions = [...new Set([...servers, current].filter(Boolean))];
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2"><Server className="w-4 h-4" /> API Server</CardTitle>
+        <CardDescription>Point the dashboard to a different backend. Useful when running multiple bot instances.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div>
+          <Label className="text-xs text-muted-foreground">Active server</Label>
+          <p className="text-sm font-mono text-foreground mt-1 truncate">
+            {current || <span className="text-muted-foreground italic">Local (same origin)</span>}
+          </p>
+        </div>
+        {allOptions.length > 0 && (
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Saved servers</Label>
+            {allOptions.map(url => (
+              <div key={url} className="flex items-center gap-2">
+                <button
+                  className={`flex-1 text-left text-xs font-mono px-3 py-2 rounded-md border transition-colors truncate ${
+                    current === url
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border hover:border-primary/50 text-muted-foreground hover:text-foreground"
+                  }`}
+                  onClick={() => apply(url)}
+                >
+                  {url.replace(/^https?:\/\//, "")}
+                </button>
+                {current === url && <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />}
+                <Button size="sm" variant="ghost" className="h-7 w-7 p-0 shrink-0 text-muted-foreground hover:text-red-500" onClick={() => removeServer(url)}>
+                  <Trash2 className="w-3 h-3" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div>
+          <Label className="text-xs text-muted-foreground">Add new server URL</Label>
+          <div className="flex gap-2 mt-1">
+            <Input
+              value={newUrl}
+              onChange={e => setNewUrl(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && addServer()}
+              placeholder="https://api.yourdomain.com"
+              className="flex-1 font-mono text-xs h-8"
+            />
+            <Button size="sm" onClick={addServer} disabled={!newUrl.trim()} className="h-8 shrink-0">
+              <Plus className="w-3.5 h-3.5 mr-1" /> Add
+            </Button>
+          </div>
+        </div>
+        <Button size="sm" variant="ghost" className="text-xs text-muted-foreground" onClick={() => apply("")}>
+          Reset to local server
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function Settings() {
   const { data: settings, isLoading } = useGetSettings();
@@ -54,6 +156,8 @@ export default function Settings() {
             {updateSettings.isPending ? "Saving..." : "Save"}
           </Button>
         </div>
+
+        <ApiServersCard />
 
         {/* Bot basics */}
         <Card>

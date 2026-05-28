@@ -29,7 +29,7 @@ export type BotStatusMe = {
 export interface CampaignLogEntry {
   phone: string;
   name: string;
-  status: 'sent' | 'no_telegram' | 'error' | 'flood_wait' | 'pending';
+  status: 'sent' | 'no_telegram' | 'error' | 'flood_wait' | 'pending' | 'skipped';
   error?: string;
   at?: number;
 }
@@ -40,6 +40,7 @@ export interface CampaignStatus {
   sent?: number;
   failed?: number;
   noTelegram?: number;
+  skipped?: number;
   percent?: number;
   elapsed?: number;
   remain?: number;

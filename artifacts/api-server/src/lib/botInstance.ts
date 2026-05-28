@@ -84,7 +84,8 @@ class TelegramBotEngine {
   private activePersona = new Map<string, string>();
   private rateLimitMap = new Map<string, any>();
   private pending: { phoneCode: ((v: string) => void) | null; password: ((v: string) => void) | null } = { phoneCode: null, password: null };
-  private campaign: any = { active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, noTelegram: 0, startTime: null, timer: null, onUpdate: null, delayMs: 2400, log: [], batchCount: 0, floodWait: 0, options: {} };
+  private campaign: any = { active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, noTelegram: 0, skipped: 0, startTime: null, timer: null, onUpdate: null, delayMs: 2400, log: [], batchCount: 0, floodWait: 0, options: {} };
+  private blacklist = new Set<string>();
 
   constructor() {
     this.settings = { ...SETTINGS_DEFAULTS, ...readJSON("settings.json", {}) };
@@ -209,6 +210,7 @@ class TelegramBotEngine {
       sent: this.campaign.sent,
       failed: this.campaign.failed,
       noTelegram: this.campaign.noTelegram,
+      skipped: this.campaign.skipped || 0,
       elapsed: this.campaign.startTime ? Math.round((Date.now() - this.campaign.startTime) / 60000) : 0,
       remain: total > done ? Math.ceil((total - done) * avgDelay / 60) : 0,
       percent: total > 0 ? Math.round(done / total * 100) : 0,
@@ -221,6 +223,31 @@ class TelegramBotEngine {
     if (!this.campaign.active) return;
     clearTimeout(this.campaign.timer);
     this.campaign.active = false;
+    this._saveHistory();
+  }
+
+  private _saveHistory() {
+    if (!this.campaign.startTime || !this.campaign.contacts.length) return;
+    try {
+      const histDir = path.join(DATA_DIR, "campaign-history");
+      if (!fs.existsSync(histDir)) fs.mkdirSync(histDir, { recursive: true });
+      const id = this.campaign.startTime.toString();
+      fs.writeFileSync(
+        path.join(histDir, `${id}.json`),
+        JSON.stringify({
+          id,
+          startTime: this.campaign.startTime,
+          endTime: Date.now(),
+          total: this.campaign.contacts.length,
+          sent: this.campaign.sent,
+          failed: this.campaign.failed,
+          noTelegram: this.campaign.noTelegram,
+          skipped: this.campaign.skipped || 0,
+          message: (this.campaign.message || "").slice(0, 120),
+          log: this.campaign.log || []
+        }, null, 2)
+      );
+    } catch {}
   }
 
   async startCampaignFromAPI(contacts: any[], message: string, options: any = {}) {
@@ -236,8 +263,10 @@ class TelegramBotEngine {
       autoVariation: options.autoVariation ?? true,
       dailyLimit: options.dailyLimit ?? 0,
     };
+    const bl: string[] = readJSON("blacklist.json", []);
+    this.blacklist = new Set(bl.map((p: string) => p.replace(/\s/g, "")));
     this.campaign = {
-      active: true, contacts, index: 0, message, sent: 0, failed: 0, noTelegram: 0,
+      active: true, contacts, index: 0, message, sent: 0, failed: 0, noTelegram: 0, skipped: 0,
       startTime: Date.now(), timer: null,
       onUpdate: (t: string) => console.log("[Campaign]", t),
       delayMs: opts.minDelay * 1000,
@@ -252,16 +281,28 @@ class TelegramBotEngine {
     const { contacts, index, message, onUpdate, options } = this.campaign;
     if (index >= contacts.length) {
       this.campaign.active = false;
+      this._saveHistory();
       onUpdate?.(`✅ Complete! Sent: ${this.campaign.sent}, No TG: ${this.campaign.noTelegram}, Failed: ${this.campaign.failed}`);
       return;
     }
     if (options.dailyLimit > 0 && this.campaign.dailySent >= options.dailyLimit) {
       this.campaign.active = false;
+      this._saveHistory();
       onUpdate?.(`⏹ Daily limit reached (${options.dailyLimit})`);
       return;
     }
     const { phone, name } = contacts[index];
     this.campaign.index++;
+
+    // Skip blacklisted numbers
+    const normPhone = phone.replace(/\s/g, "");
+    if (this.blacklist.has(normPhone) || this.blacklist.has(phone)) {
+      this.campaign.skipped++;
+      this.campaign.log.push({ phone, name, status: "skipped", at: Date.now(), error: "blacklisted" });
+      this.campaign.timer = setTimeout(() => this._campaignNext(), 50);
+      return;
+    }
+
     let personalised = message.replace(/\{name\}/gi, name || "").replace(/\{phone\}/gi, phone);
     if (options.autoVariation) personalised = addVariation(personalised);
 
