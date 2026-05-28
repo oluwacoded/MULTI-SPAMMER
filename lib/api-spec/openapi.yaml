@@ -1,22 +1,33 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: MFG Telegram Bot API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: bot
+    description: Telegram bot status and control
+  - name: login
+    description: Telegram login flow
+  - name: campaign
+    description: Telegram bulk campaign
+  - name: sms
+    description: SMS campaign and flasher
+  - name: settings
+    description: Bot settings
+  - name: wallet
+    description: Wallet management
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +35,306 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /bot/status:
+    get:
+      operationId: getBotStatus
+      tags: [bot]
+      summary: Get bot connection status
+      responses:
+        "200":
+          description: Bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotStatus"
+
+  /bot/disconnect:
+    post:
+      operationId: disconnectBot
+      tags: [bot]
+      summary: Disconnect Telegram session
+      responses:
+        "200":
+          description: Disconnected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleResult"
+
+  /login/start:
+    post:
+      operationId: loginStart
+      tags: [login]
+      summary: Start login with phone number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginStartInput"
+      responses:
+        "200":
+          description: Login started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleResult"
+
+  /login/code:
+    post:
+      operationId: loginCode
+      tags: [login]
+      summary: Submit verification code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginCodeInput"
+      responses:
+        "200":
+          description: Code submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleResult"
+
+  /login/2fa:
+    post:
+      operationId: login2fa
+      tags: [login]
+      summary: Submit 2FA password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Login2faInput"
+      responses:
+        "200":
+          description: 2FA submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleResult"
+
+  /campaign/status:
+    get:
+      operationId: getCampaignStatus
+      tags: [campaign]
+      summary: Get Telegram campaign status
+      responses:
+        "200":
+          description: Campaign status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignStatus"
+
+  /campaign/start:
+    post:
+      operationId: startCampaignApi
+      tags: [campaign]
+      summary: Start a Telegram bulk campaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CampaignStartInput"
+      responses:
+        "200":
+          description: Campaign started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleResult"
+
+  /campaign/stop:
+    post:
+      operationId: stopCampaignApi
+      tags: [campaign]
+      summary: Stop active Telegram campaign
+      responses:
+        "200":
+          description: Campaign stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleResult"
+
+  /sms/status:
+    get:
+      operationId: getSmsCampaignStatus
+      tags: [sms]
+      summary: Get SMS campaign status
+      responses:
+        "200":
+          description: SMS campaign status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsCampaignStatus"
+
+  /sms/start:
+    post:
+      operationId: startSmsCampaign
+      tags: [sms]
+      summary: Start an SMS campaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmsCampaignInput"
+      responses:
+        "200":
+          description: SMS campaign started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleResult"
+
+  /sms/stop:
+    post:
+      operationId: stopSmsCampaign
+      tags: [sms]
+      summary: Stop active SMS campaign
+      responses:
+        "200":
+          description: Stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleResult"
+
+  /sms/flash:
+    post:
+      operationId: sendSmsFlash
+      tags: [sms]
+      summary: Send a single SMS flash
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmsFlashInput"
+      responses:
+        "200":
+          description: Flash sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsFlashResult"
+
+  /sms/providers:
+    get:
+      operationId: getSmsProviders
+      tags: [sms]
+      summary: Get configured SMS providers
+      responses:
+        "200":
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsProviderList"
+
+  /sms/history:
+    get:
+      operationId: getSmsHistory
+      tags: [sms]
+      summary: Get SMS send history
+      responses:
+        "200":
+          description: SMS history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsHistoryList"
+
+  /settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Get bot settings
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotSettings"
+    post:
+      operationId: updateSettings
+      tags: [settings]
+      summary: Update bot settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BotSettingsUpdate"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotSettings"
+
+  /wallet/{userId}:
+    get:
+      operationId: getWallet
+      tags: [wallet]
+      summary: Get wallet for user
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Wallet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Wallet"
+
+  /wallet/topup:
+    post:
+      operationId: walletTopup
+      tags: [wallet]
+      summary: Top up a wallet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WalletTopupInput"
+      responses:
+        "200":
+          description: Topped up
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleResult"
+
+  /scam/log:
+    get:
+      operationId: getScamLog
+      tags: [bot]
+      summary: Get scam alert log
+      responses:
+        "200":
+          description: Scam alerts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScamAlertList"
+
 components:
   schemas:
     HealthStatus:
@@ -31,6 +342,358 @@ components:
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    SimpleResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        message:
+          type: string
+      required: [ok]
+
+    BotStatus:
+      type: object
+      properties:
+        connected:
+          type: boolean
+        me:
+          type: ["object", "null"]
+          properties:
+            username:
+              type: ["string", "null"]
+            phone:
+              type: ["string", "null"]
+            name:
+              type: ["string", "null"]
+        uptime:
+          type: integer
+        messages:
+          type: integer
+        aiEnabled:
+          type: boolean
+        hasGroqKey:
+          type: boolean
+        hasSmmKey:
+          type: boolean
+        hasSmsKey:
+          type: boolean
+        campaign:
+          $ref: "#/components/schemas/CampaignStatus"
+        smsCampaign:
+          $ref: "#/components/schemas/SmsCampaignStatus"
+      required: [connected, uptime, messages, aiEnabled, hasGroqKey, hasSmmKey, hasSmsKey]
+
+    CampaignStatus:
+      type: object
+      properties:
+        active:
+          type: boolean
+        total:
+          type: integer
+        sent:
+          type: integer
+        failed:
+          type: integer
+        percent:
+          type: integer
+        elapsed:
+          type: integer
+        remain:
+          type: integer
+      required: [active]
+
+    SmsCampaignStatus:
+      type: object
+      properties:
+        active:
+          type: boolean
+        total:
+          type: integer
+        sent:
+          type: integer
+        failed:
+          type: integer
+        percent:
+          type: integer
+        elapsed:
+          type: integer
+        remain:
+          type: integer
+        provider:
+          type: string
+      required: [active]
+
+    SmsCampaignInput:
+      type: object
+      properties:
+        contacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Contact"
+        message:
+          type: string
+        provider:
+          type: string
+        senderId:
+          type: ["string", "null"]
+      required: [contacts, message]
+
+    SmsFlashInput:
+      type: object
+      properties:
+        phone:
+          type: string
+        message:
+          type: string
+        provider:
+          type: string
+        senderId:
+          type: ["string", "null"]
+      required: [phone, message]
+
+    SmsFlashResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        messageId:
+          type: ["string", "null"]
+        message:
+          type: string
+        provider:
+          type: string
+      required: [ok, message, provider]
+
+    SmsProviderList:
+      type: object
+      properties:
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/SmsProvider"
+        active:
+          type: string
+      required: [providers, active]
+
+    SmsProvider:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        configured:
+          type: boolean
+        balance:
+          type: ["string", "null"]
+      required: [id, name, configured]
+
+    SmsHistoryList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SmsHistoryItem"
+      required: [items]
+
+    SmsHistoryItem:
+      type: object
+      properties:
+        id:
+          type: string
+        phone:
+          type: string
+        message:
+          type: string
+        status:
+          type: string
+        provider:
+          type: string
+        at:
+          type: integer
+        messageId:
+          type: ["string", "null"]
+      required: [id, phone, message, status, provider, at]
+
+    CampaignStartInput:
+      type: object
+      properties:
+        contacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Contact"
+        message:
+          type: string
+      required: [contacts, message]
+
+    Contact:
+      type: object
+      properties:
+        phone:
+          type: string
+        name:
+          type: string
+      required: [phone, name]
+
+    LoginStartInput:
+      type: object
+      properties:
+        phone:
+          type: string
+      required: [phone]
+
+    LoginCodeInput:
+      type: object
+      properties:
+        code:
+          type: string
+      required: [code]
+
+    Login2faInput:
+      type: object
+      properties:
+        password:
+          type: string
+      required: [password]
+
+    BotSettings:
+      type: object
+      properties:
+        aiEnabled:
+          type: boolean
+        aiMode:
+          type: string
+        aiDelay:
+          type: integer
+        transcribeVoice:
+          type: boolean
+        visionEnabled:
+          type: boolean
+        antiScam:
+          type: boolean
+        moodAware:
+          type: boolean
+        birthdayWishes:
+          type: boolean
+        autoTakeover:
+          type: boolean
+        takeoverMinutes:
+          type: integer
+        smmMarkup:
+          type: integer
+        smmNGNRate:
+          type: integer
+        prefix:
+          type: string
+        botName:
+          type: string
+        aiDisclaimer:
+          type: boolean
+        disclaimerText:
+          type: string
+        systemPrompt:
+          type: string
+        smsProvider:
+          type: string
+        smsApiKey:
+          type: ["string", "null"]
+        smsSenderId:
+          type: ["string", "null"]
+      required: [aiEnabled, prefix, botName]
+
+    BotSettingsUpdate:
+      type: object
+      properties:
+        aiEnabled:
+          type: boolean
+        aiMode:
+          type: string
+        aiDelay:
+          type: integer
+        transcribeVoice:
+          type: boolean
+        visionEnabled:
+          type: boolean
+        antiScam:
+          type: boolean
+        moodAware:
+          type: boolean
+        birthdayWishes:
+          type: boolean
+        autoTakeover:
+          type: boolean
+        takeoverMinutes:
+          type: integer
+        smmMarkup:
+          type: integer
+        smmNGNRate:
+          type: integer
+        prefix:
+          type: string
+        botName:
+          type: string
+        aiDisclaimer:
+          type: boolean
+        disclaimerText:
+          type: string
+        systemPrompt:
+          type: string
+        smsProvider:
+          type: string
+        smsApiKey:
+          type: ["string", "null"]
+        smsSenderId:
+          type: ["string", "null"]
+
+    Wallet:
+      type: object
+      properties:
+        userId:
+          type: string
+        balance:
+          type: number
+        currency:
+          type: string
+        topups:
+          type: array
+          items:
+            type: object
+        spends:
+          type: array
+          items:
+            type: object
+      required: [userId, balance, currency]
+
+    WalletTopupInput:
+      type: object
+      properties:
+        userId:
+          type: string
+        amount:
+          type: number
+        note:
+          type: string
+      required: [userId, amount]
+
+    ScamAlert:
+      type: object
+      properties:
+        chatId:
+          type: string
+        text:
+          type: string
+        at:
+          type: integer
+      required: [chatId, text, at]
+
+    ScamAlertList:
+      type: object
+      properties:
+        alerts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScamAlert"
+      required: [alerts]

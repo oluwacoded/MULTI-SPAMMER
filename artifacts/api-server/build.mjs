@@ -104,7 +104,29 @@ async function buildAll() {
     sourcemap: "linked",
     plugins: [
       // pino relies on workers to handle logging, instead of externalizing it we use a plugin to handle it
-      esbuildPluginPino({ transports: ["pino-pretty"] })
+      esbuildPluginPino({ transports: ["pino-pretty"] }),
+      // Stub optional native deps that aren't compiled in this environment
+      {
+        name: "optional-native-stubs",
+        setup(build) {
+          build.onResolve({ filter: /^(bufferutil|utf-8-validate)$/ }, args => ({
+            path: args.path,
+            namespace: "optional-native-stub",
+          }));
+          build.onLoad({ filter: /.*/, namespace: "optional-native-stub" }, (args) => {
+            if (args.path === "bufferutil") {
+              return {
+                contents: `module.exports = { mask: function(s,m,o,off,len){for(let i=0;i<len;i++)o[off+i]=s[i]^m[i&3];}, unmask: function(b,m){for(let i=0;i<b.length;i++)b[i]^=m[i&3];} };`,
+                loader: "js",
+              };
+            }
+            return {
+              contents: `module.exports = { isValidUTF8: function() { return true; } };`,
+              loader: "js",
+            };
+          });
+        },
+      },
     ],
     // Make sure packages that are cjs only (e.g. express) but are bundled continue to work in our esm output file
     banner: {

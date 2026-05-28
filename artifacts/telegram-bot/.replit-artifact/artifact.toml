@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "MFG Telegram Bot"
+version = "1.0.0"
+id = "artifacts/telegram-bot"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18199
+
+[services.development]
+run = "pnpm --filter @workspace/telegram-bot run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/telegram-bot", "run", "build" ]
+publicDir = "artifacts/telegram-bot/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18199"
+BASE_PATH = "/"
