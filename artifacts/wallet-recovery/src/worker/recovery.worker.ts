@@ -50,6 +50,8 @@ self.onmessage = async (event: MessageEvent<RecoveryRequest>) => {
 
     const target = targetAddress ? normalizeAddress(targetAddress) : null;
     const matches: RecoveryMatch[] = [];
+    const VALID_CAP = 200;
+    let validSent = 0;
     let tested = 0;
     let validChecksums = 0;
     let checked = 0;
@@ -122,12 +124,18 @@ self.onmessage = async (event: MessageEvent<RecoveryRequest>) => {
             await sleep(120);
             post({ type: "progress", tested, total, validChecksums, checked });
           }
+        }
+
+        // Reaching here means the phrase is checksum-valid but NOT a confirmed
+        // hit (no target match, and — in scan mode — no on-chain activity on any
+        // of its addresses). Only now do we stream it to the UI, so every
+        // displayed phrase has been fully evaluated. Stream is capped.
+        if (validSent < VALID_CAP) {
+          post({ type: "valid", match: { mnemonic, addresses } });
+          validSent++;
         } else {
-          matches.push({ mnemonic, addresses });
-          if (matches.length >= 200) {
-            capped = true;
-            break;
-          }
+          capped = true;
+          break;
         }
       }
 
