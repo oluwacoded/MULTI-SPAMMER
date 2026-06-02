@@ -502,11 +502,31 @@ export default function Home() {
           <Card className="mb-6 border-dashed">
             <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
               <CircleHelp className="h-8 w-8 text-muted-foreground" />
-              <p className="text-sm font-medium">No valid phrase found</p>
-              <p className="max-w-sm text-xs text-muted-foreground">
-                None of the {formatNumber(tested)} combinations matched. Double-check the order of the words you do
-                remember, and widen the options for any you're unsure about.
-              </p>
+              {validChecksums === 0 ? (
+                <>
+                  <p className="text-sm font-medium">Those exact words aren't a valid seed phrase</p>
+                  <p className="max-w-sm text-xs text-muted-foreground">
+                    A real seed phrase has a built-in checksum, so the words and their order have to be exactly right.
+                    {tested === 1
+                      ? " You gave one fixed guess and it didn't pass — which almost always means a word is slightly off or out of order."
+                      : ` None of the ${formatNumber(tested)} combinations passed the checksum.`}
+                  </p>
+                  <p className="max-w-sm text-xs text-muted-foreground">
+                    Tell the tool which words you're unsure about so it can try the alternatives for you: replace any
+                    uncertain word with <code className="rounded bg-muted px-1">?</code>, or list a few options like{" "}
+                    <code className="rounded bg-muted px-1">{"{rent, rend, lend}"}</code>. Then run it again.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-medium">No matching wallet found</p>
+                  <p className="max-w-sm text-xs text-muted-foreground">
+                    {formatNumber(validChecksums)} valid phrase{validChecksums === 1 ? "" : "s"} were checked, but none
+                    matched your address{runWithScan ? " or showed any on-chain activity" : ""}. Double-check the known
+                    address, widen the options for any words you're unsure about, or increase "Addresses per path".
+                  </p>
+                </>
+              )}
             </CardContent>
           </Card>
         )}
