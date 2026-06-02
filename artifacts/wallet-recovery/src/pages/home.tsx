@@ -12,6 +12,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { useToast } from "@/hooks/use-toast";
 import { parseTemplate } from "@/lib/recovery";
 import type { RecoveryMatch, WorkerOutbound, RecoveryRequest, LogLevel } from "@/lib/recovery";
+import { checkActivity, type ActivityResult } from "@/lib/balance";
 
 const MAX_COMBOS = 5_000_000;
 const MAX_LOG_LINES = 250;
@@ -83,6 +84,40 @@ function CopyButton({ value }: { value: string }) {
 }
 
 function MatchCard({ match, isTarget }: { match: RecoveryMatch; isTarget: boolean }) {
+  const [balances, setBalances] = useState<Record<string, ActivityResult> | null>(null);
+  const [checkingBal, setCheckingBal] = useState(false);
+  const [balError, setBalError] = useState<string | null>(null);
+
+  const checkBalances = async () => {
+    setCheckingBal(true);
+    setBalError(null);
+    try {
+      const entries = await Promise.all(
+        match.addresses.map(async (a) => {
+          try {
+            return [a.address, await checkActivity(a.kind, a.address)] as const;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const ok = entries.filter(
+        (e): e is readonly [string, ActivityResult] => e !== null,
+      );
+      if (ok.length === 0) {
+        setBalError("Couldn't reach the block explorers — check your connection and try again.");
+      } else {
+        setBalances(Object.fromEntries(ok));
+      }
+    } finally {
+      setCheckingBal(false);
+    }
+  };
+
+  const fundedCount = balances
+    ? Object.values(balances).filter((b) => b.hasActivity).length
+    : 0;
+
   return (
     <Card className="border-emerald-500/40 bg-emerald-500/5" data-testid="card-match">
       <CardHeader className="pb-3">
@@ -107,19 +142,74 @@ function MatchCard({ match, isTarget }: { match: RecoveryMatch; isTarget: boolea
         <div className="rounded-md border bg-background p-3 font-mono text-sm leading-relaxed break-words" data-testid="text-mnemonic">
           {match.mnemonic}
         </div>
+
+        {isTarget && (
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                onClick={checkBalances}
+                disabled={checkingBal}
+                data-testid="button-check-balances"
+              >
+                {checkingBal ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Wallet className="h-3.5 w-3.5" />
+                )}
+                {checkingBal
+                  ? "Checking each network…"
+                  : balances
+                    ? "Refresh balances"
+                    : "Check balances on each network"}
+              </Button>
+              {balances && (
+                <span className="text-xs text-muted-foreground" data-testid="text-balance-summary">
+                  {fundedCount > 0
+                    ? `Funds on ${fundedCount} address${fundedCount === 1 ? "" : "es"}`
+                    : "No balance on any network"}
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Looks up only the public addresses below on the Bitcoin &amp; Ethereum networks — your seed phrase never
+              leaves this device.
+            </p>
+            {balError && <p className="text-xs text-amber-600 dark:text-amber-500">{balError}</p>}
+          </div>
+        )}
+
         <div className="space-y-1.5">
           {match.addresses.map((a) => {
             const matched = match.matchedAddress?.path === a.path;
+            const bal = balances?.[a.address];
             return (
               <div
                 key={a.path}
-                className={`flex flex-col gap-0.5 rounded-md border px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between ${matched ? "border-emerald-500/50 bg-emerald-500/10" : ""}`}
+                className={`flex flex-col gap-0.5 rounded-md border px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between ${matched || bal?.hasActivity ? "border-emerald-500/50 bg-emerald-500/10" : ""}`}
               >
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{a.label}</span>
                   <span className="text-muted-foreground">{a.path}</span>
                 </div>
-                <span className="font-mono break-all">{a.address}</span>
+                <div className="flex flex-col gap-0.5 sm:items-end">
+                  <span className="font-mono break-all">{a.address}</span>
+                  {bal && (
+                    <span
+                      className={
+                        bal.hasActivity
+                          ? "font-medium text-emerald-600 dark:text-emerald-400"
+                          : "text-muted-foreground"
+                      }
+                      data-testid="text-address-balance"
+                    >
+                      {bal.chain} · {bal.balance}
+                      {bal.txCount > 0 ? ` · ${bal.txCount} tx` : ""}
+                    </span>
+                  )}
+                </div>
               </div>
             );
           })}
