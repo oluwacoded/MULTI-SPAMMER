@@ -145,6 +145,8 @@ export default function Home() {
   const [validChecksums, setValidChecksums] = useState(0);
   const [checked, setChecked] = useState(0);
   const [matches, setMatches] = useState<RecoveryMatch[]>([]);
+  const [validPhrases, setValidPhrases] = useState<RecoveryMatch[]>([]);
+  const [stopped, setStopped] = useState(false);
   const [capped, setCapped] = useState(false);
   const [logLines, setLogLines] = useState<LogLine[]>([]);
   const [runWithScan, setRunWithScan] = useState(false);
@@ -171,6 +173,7 @@ export default function Home() {
   const stop = () => {
     workerRef.current?.terminate();
     workerRef.current = null;
+    setStopped(true);
     setPhase("done");
   };
 
@@ -184,6 +187,8 @@ export default function Home() {
     setValidChecksums(0);
     setChecked(0);
     setMatches([]);
+    setValidPhrases([]);
+    setStopped(false);
     setCapped(false);
     setLogLines([]);
 
@@ -198,6 +203,8 @@ export default function Home() {
         setTested(msg.tested);
         setValidChecksums(msg.validChecksums);
         setChecked(msg.checked);
+      } else if (msg.type === "valid") {
+        setValidPhrases((prev) => (prev.length >= 200 ? prev : [...prev, msg.match]));
       } else if (msg.type === "log") {
         setLogLines((prev) => {
           const next = [...prev, { level: msg.level, line: msg.line }];
@@ -476,8 +483,9 @@ export default function Home() {
                 )}
                 {phase === "done" && (
                   <span data-testid="text-matchcount">
-                    {matches.length} {runWithTarget || runWithScan ? "match" : "candidate"}
-                    {matches.length === 1 ? "" : "s"}
+                    {runWithTarget || runWithScan
+                      ? `${matches.length} match${matches.length === 1 ? "" : "es"}`
+                      : `${formatNumber(validPhrases.length)} candidate${validPhrases.length === 1 ? "" : "s"}`}
                   </span>
                 )}
               </div>
@@ -491,31 +499,67 @@ export default function Home() {
           </Card>
         )}
 
+        {phase === "done" && stopped && (matches.length > 0 || validPhrases.length > 0) && (
+          <p className="mb-3 text-sm text-muted-foreground" data-testid="text-stopped">
+            Search stopped — showing what was found so far.
+          </p>
+        )}
+
+        {/* Confirmed hit — matched your address or had on-chain funds */}
         {phase === "done" && matches.length > 0 && (
           <div className="mb-6 space-y-3">
-            {targetMatch ? (
-              <MatchCard match={targetMatch} isTarget />
+            {(targetMatch ? [targetMatch] : matches).map((m, i) => (
+              <MatchCard key={i} match={m} isTarget />
+            ))}
+          </div>
+        )}
+
+        {/* Valid-checksum phrases found so far (streamed live, kept after Stop) */}
+        {phase === "done" && matches.length === 0 && validPhrases.length > 0 && (
+          <div className="mb-6 space-y-3" data-testid="list-valid-phrases">
+            <p className="text-sm font-medium">
+              {formatNumber(validPhrases.length)}
+              {validChecksums > validPhrases.length ? "+" : ""} valid phrase
+              {validPhrases.length === 1 ? "" : "s"} found
+            </p>
+            {runWithTarget || runWithScan ? (
+              <p className="text-xs text-muted-foreground">
+                These passed the checksum but did <span className="font-medium text-foreground">not</span> match your
+                {runWithScan ? " on-chain activity" : " address"} — so none of these is your wallet. They're shown only so
+                you can see the search is working.
+              </p>
             ) : (
-              <>
-                {!targetAddress.trim() && (
-                  <p className="text-sm text-muted-foreground">
-                    These phrases all have valid checksums. Add a known address above — or turn on the on-chain scan — to
-                    identify which one is yours.
-                  </p>
-                )}
-                {matches.slice(0, 50).map((m, i) => (
-                  <MatchCard key={i} match={m} isTarget={false} />
-                ))}
-              </>
+              <p className="text-xs text-muted-foreground">
+                These all have valid checksums. Add a known address above — or turn on the on-chain scan — to identify
+                which one is yours.
+              </p>
+            )}
+            {validPhrases.slice(0, 50).map((m, i) => (
+              <MatchCard key={i} match={m} isTarget={false} />
+            ))}
+            {validPhrases.length > 50 && (
+              <p className="text-xs text-muted-foreground">
+                Showing the first 50 of {formatNumber(validPhrases.length)}.
+              </p>
             )}
           </div>
         )}
 
-        {phase === "done" && matches.length === 0 && (
+        {/* Nothing valid found */}
+        {phase === "done" && matches.length === 0 && validPhrases.length === 0 && (
           <Card className="mb-6 border-dashed">
             <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
               <CircleHelp className="h-8 w-8 text-muted-foreground" />
-              {validChecksums === 0 ? (
+              {stopped ? (
+                <>
+                  <p className="text-sm font-medium">Stopped before any valid phrase was found</p>
+                  <p className="max-w-sm text-xs text-muted-foreground">
+                    No valid-checksum phrase had turned up yet in the {formatNumber(tested)} combination
+                    {tested === 1 ? "" : "s"} tested so far. Let it run longer, or widen the options for words you're
+                    unsure about.
+                  </p>
+                </>
+              ) : validChecksums === 0 ? (
                 <>
                   <p className="text-sm font-medium">Those exact words aren't a valid seed phrase</p>
                   <p className="max-w-sm text-xs text-muted-foreground">

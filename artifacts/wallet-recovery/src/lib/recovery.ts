@@ -135,6 +135,7 @@ export type WorkerOutbound =
       checked: number;
     }
   | { type: "log"; level: LogLevel; line: string }
+  | { type: "valid"; match: RecoveryMatch }
   | {
       type: "done";
       tested: number;
