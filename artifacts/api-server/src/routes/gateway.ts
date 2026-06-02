@@ -21,6 +21,7 @@ import {
 } from "../lib/gatewayAuth.js";
 import {
   normalizePhone,
+  validateBaseUrl,
   sendSms,
   testConnection,
   verifyWebhookSignature,
@@ -179,13 +180,21 @@ router.post("/gateway/devices", requireAuth, async (req, res) => {
   const { name, phoneNumber, smsgateBaseUrl, smsgateLogin, smsgatePassword, webhookSecret } =
     req.body ?? {};
   if (!name) return res.status(400).json({ error: "Device name is required." });
+  let safeBaseUrl: string | undefined;
+  if (smsgateBaseUrl) {
+    try {
+      safeBaseUrl = validateBaseUrl(String(smsgateBaseUrl));
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
+  }
   const rows = await db
     .insert(gwDevices)
     .values({
       userId,
       name: String(name),
       phoneNumber: phoneNumber ? normalizePhone(String(phoneNumber)) : null,
-      ...(smsgateBaseUrl ? { smsgateBaseUrl: String(smsgateBaseUrl) } : {}),
+      ...(safeBaseUrl ? { smsgateBaseUrl: safeBaseUrl } : {}),
       smsgateLogin: smsgateLogin ? String(smsgateLogin) : null,
       smsgatePassword: smsgatePassword ? String(smsgatePassword) : null,
       webhookSecret: webhookSecret ? String(webhookSecret) : null,
@@ -204,7 +213,17 @@ router.patch("/gateway/devices/:id", requireAuth, async (req, res) => {
   if (name !== undefined) set["name"] = String(name);
   if (phoneNumber !== undefined)
     set["phoneNumber"] = phoneNumber ? normalizePhone(String(phoneNumber)) : null;
-  if (smsgateBaseUrl !== undefined) set["smsgateBaseUrl"] = String(smsgateBaseUrl);
+  if (smsgateBaseUrl !== undefined) {
+    if (smsgateBaseUrl) {
+      try {
+        set["smsgateBaseUrl"] = validateBaseUrl(String(smsgateBaseUrl));
+      } catch (err) {
+        return res.status(400).json({ error: (err as Error).message });
+      }
+    } else {
+      set["smsgateBaseUrl"] = null;
+    }
+  }
   if (smsgateLogin !== undefined) set["smsgateLogin"] = smsgateLogin ? String(smsgateLogin) : null;
   if (smsgatePassword !== undefined && smsgatePassword !== "")
     set["smsgatePassword"] = String(smsgatePassword);
