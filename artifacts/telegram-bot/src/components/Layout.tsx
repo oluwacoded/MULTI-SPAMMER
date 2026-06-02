@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Send, MessageSquare, Zap, Settings, LogIn, Radio, Menu, X, BookUser, History, Server, Check, Users, Mail, MessageCircle, Plus, Trash2 } from "lucide-react";
+import { LayoutDashboard, Send, MessageSquare, Zap, Settings, LogIn, Radio, Menu, X, BookUser, History, Server, Check, Users, Mail, MessageCircle, Plus, Trash2, Wallet, Smartphone, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { useGetBotStatus } from "@workspace/api-client-react";
@@ -18,6 +18,11 @@ const navItems = [
   { href: "/sms-campaign", label: "SMS Campaign", icon: MessageSquare },
   { href: "/sms-flash", label: "SMS Flash", icon: Zap },
   { href: "/settings", label: "Settings", icon: Settings },
+];
+
+const externalApps = [
+  { href: "/wallet-recovery/", label: "Wallet Recovery", icon: Wallet },
+  { href: "/sms-dashboard/", label: "SMS Gateway", icon: Smartphone },
 ];
 
 function readServers(): string[] {
@@ -216,6 +221,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </div>
           </Link>
         ))}
+
+        {/* Other apps (separate web apps on the same domain) */}
+        <div className="pt-3 mt-2 border-t border-sidebar-border">
+          <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Other Apps</p>
+          {externalApps.map(({ href, label, icon: Icon }) => (
+            <a
+              key={href}
+              href={href}
+              onClick={() => setOpen(false)}
+              data-testid={`app-${label.toLowerCase().replace(/\s+/g, "-")}`}
+              className="flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm cursor-pointer transition-colors text-sidebar-foreground hover:bg-sidebar-accent hover:text-foreground"
+            >
+              <Icon className="w-4 h-4 shrink-0" />
+              <span className="flex-1">{label}</span>
+              <ExternalLink className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+            </a>
+          ))}
+        </div>
       </nav>
 
       {/* Footer */}
