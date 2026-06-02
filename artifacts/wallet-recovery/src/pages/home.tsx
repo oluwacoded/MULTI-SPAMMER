@@ -319,6 +319,19 @@ export default function Home() {
               </div>
             )}
 
+            {hasInput && parsed.errors.length === 0 && parsed.totalCombos === 1 && (
+              <div className="flex gap-2.5 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs" data-testid="hint-single-combo">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <p className="text-muted-foreground">
+                  Every word is set, so this tests only <span className="font-medium text-foreground">one exact guess</span>.
+                  If it doesn't match, you remembered a word or the order slightly wrong. Mark the ones you're unsure of
+                  with <code className="rounded bg-muted px-1">?</code> (or a few options like{" "}
+                  <code className="rounded bg-muted px-1">{"{rent, rend, lend}"}</code>) so the tool searches the
+                  alternatives for you.
+                </p>
+              </div>
+            )}
+
             {parsed.errors.length > 0 && (
               <div className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive" data-testid="text-errors">
                 {parsed.errors.map((err, i) => (
