@@ -376,19 +376,30 @@ class TelegramBotEngine {
 
       try {
         const { Api } = await import("telegram");
-        const cleanPhone = phone.replace(/\D/g, "").replace(/^0+/, "");
-        const normalised = cleanPhone.startsWith("+") ? cleanPhone : "+" + cleanPhone;
-        const imported: any = await this.tgClient!.invoke(
-          new Api.contacts.ImportContacts({
-            contacts: [new Api.InputPhoneContact({
-              clientId: BigInt(index),
-              phone: normalised,
-              firstName: name || "User",
-              lastName: "",
-            })],
-          })
-        );
-        const user = imported?.users?.[0];
+        let user: any = null;
+        if (phone.trim().startsWith("@")) {
+          // Username contact (e.g. scraped from a group where phone is hidden) — resolve directly.
+          const uname = phone.trim().replace(/^@/, "");
+          try {
+            user = await this.tgClient!.getEntity(uname);
+          } catch {
+            user = null;
+          }
+        } else {
+          const cleanPhone = phone.replace(/\D/g, "").replace(/^0+/, "");
+          const normalised = cleanPhone.startsWith("+") ? cleanPhone : "+" + cleanPhone;
+          const imported: any = await this.tgClient!.invoke(
+            new Api.contacts.ImportContacts({
+              contacts: [new Api.InputPhoneContact({
+                clientId: BigInt(index),
+                phone: normalised,
+                firstName: name || "User",
+                lastName: "",
+              })],
+            })
+          );
+          user = imported?.users?.[0];
+        }
         if (user) {
           if (options.typingDelay) {
             try {

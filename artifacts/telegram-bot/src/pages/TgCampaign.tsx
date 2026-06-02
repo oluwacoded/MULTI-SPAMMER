@@ -17,9 +17,10 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Upload, Play, Square, Users, MessageSquare, Info, Wand2, Globe, ClipboardList,
   ChevronDown, ChevronUp, Shield, CheckCircle2, XCircle, Clock, AlertTriangle,
-  Loader2, BookUser, Save, FileText, SkipForward
+  Loader2, BookUser, Save, FileText, SkipForward, Search
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiPost } from "@/lib/api";
 
 function parseVCF(text: string): Array<{ phone: string; name: string }> {
   const contacts: Array<{ phone: string; name: string }> = [];
@@ -56,6 +57,8 @@ export default function TgCampaign() {
   const [contacts, setContacts] = useState<Array<{ phone: string; name: string }>>([]);
   const [message, setMessage] = useState("Hey {name}! 👋");
   const [rawInput, setRawInput] = useState("");
+  const [groupLink, setGroupLink] = useState("");
+  const [groupLimit, setGroupLimit] = useState("5000");
   const [generateDialog, setGenerateDialog] = useState(false);
   const [scraping, setScraping] = useState(false);
   const [scrapeCount, setScrapeCount] = useState("50");
@@ -152,6 +155,22 @@ export default function TgCampaign() {
     if (parsed.length > 0) toast({ title: `Parsed ${parsed.length} contacts` });
     else toast({ title: "No valid numbers found", variant: "destructive" });
   };
+
+  const scrapeGroup = useRQMutation({
+    mutationFn: () => apiPost("/scrape/group", { link: groupLink.trim(), limit: parseInt(groupLimit) || 5000 }),
+    onSuccess: (res: any) => {
+      if (res.ok) {
+        const mapped = (res.members || [])
+          .map((m: any) => ({ phone: m.phone || (m.username ? `@${m.username}` : ""), name: m.name }))
+          .filter((c: any) => c.phone);
+        setContacts(mapped);
+        toast({ title: `Loaded ${mapped.length} contacts`, description: `from ${res.count} group members` });
+      } else {
+        toast({ title: "Scrape failed", description: res.message, variant: "destructive" });
+      }
+    },
+    onError: (e: any) => toast({ title: "Request failed", description: e?.message, variant: "destructive" }),
+  });
 
   const handleScrape = async () => {
     setScraping(true);
@@ -374,6 +393,41 @@ export default function TgCampaign() {
                 <button className="text-xs text-muted-foreground hover:text-foreground ml-1" onClick={() => setContacts([])}>Clear</button>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Scrape Telegram group → contacts */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2"><Search className="w-4 h-4" /> Pull from Telegram group</CardTitle>
+            <CardDescription>Load members of a public group/channel straight into your contacts</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-end gap-2">
+              <div className="flex-1 min-w-0">
+                <Label className="text-xs text-muted-foreground">Group link or @username</Label>
+                <Input
+                  value={groupLink}
+                  onChange={e => setGroupLink(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && groupLink.trim()) scrapeGroup.mutate(); }}
+                  placeholder="https://t.me/groupname or @groupname"
+                  className="mt-1 font-mono text-xs"
+                />
+              </div>
+              <div className="w-20 shrink-0">
+                <Label className="text-xs text-muted-foreground">Max</Label>
+                <Input type="number" min={1} max={10000} value={groupLimit} onChange={e => setGroupLimit(e.target.value)} className="mt-1 h-9" />
+              </div>
+              <Button onClick={() => scrapeGroup.mutate()} disabled={!groupLink.trim() || scrapeGroup.isPending} className="shrink-0">
+                {scrapeGroup.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Users className="w-4 h-4" />}
+              </Button>
+            </div>
+            <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50">
+              <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+              <p className="text-xs text-muted-foreground">
+                Uses your logged-in Telegram session. Public members load directly as contacts (phone where visible, otherwise @username).
+              </p>
+            </div>
           </CardContent>
         </Card>
 
