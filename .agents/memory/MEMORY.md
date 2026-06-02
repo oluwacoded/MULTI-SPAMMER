@@ -1,0 +1,1 @@
+- [API server dev workflow](api-server-dev.md) — dev script rebuilds then runs from dist; restart the workflow to pick up backend src changes, and test via /api on the shared proxy.

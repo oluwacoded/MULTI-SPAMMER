@@ -7,6 +7,9 @@ import { setBaseUrl } from "@workspace/api-client-react";
 import Dashboard from "@/pages/Dashboard";
 import Login from "@/pages/Login";
 import TgCampaign from "@/pages/TgCampaign";
+import TgScraper from "@/pages/TgScraper";
+import GmailCampaign from "@/pages/GmailCampaign";
+import WhatsApp from "@/pages/WhatsApp";
 import SmsCampaign from "@/pages/SmsCampaign";
 import SmsFlash from "@/pages/SmsFlash";
 import Settings from "@/pages/Settings";
@@ -24,6 +27,9 @@ function Router() {
       <Route path="/" component={Dashboard} />
       <Route path="/login" component={Login} />
       <Route path="/tg-campaign" component={TgCampaign} />
+      <Route path="/tg-scraper" component={TgScraper} />
+      <Route path="/gmail" component={GmailCampaign} />
+      <Route path="/whatsapp" component={WhatsApp} />
       <Route path="/sms-campaign" component={SmsCampaign} />
       <Route path="/sms-flash" component={SmsFlash} />
       <Route path="/settings" component={Settings} />

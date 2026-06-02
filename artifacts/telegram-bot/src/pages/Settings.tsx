@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useGetSettings, useUpdateSettings, getGetSettingsQueryKey, setBaseUrl } from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Layout from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,58 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Bot, Shield, Mic, Eye, MessageCircle, Settings2, Zap, Save, Server, Plus, Trash2, Check } from "lucide-react";
+import { apiGet, apiPost } from "@/lib/api";
+import { Bot, Shield, Mic, Eye, MessageCircle, Settings2, Zap, Save, Server, Plus, Trash2, Check, KeyRound } from "lucide-react";
+
+function TelegramCredsCard() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ["tg-credentials"], queryFn: () => apiGet("/tg-credentials") });
+  const [apiId, setApiId] = useState("");
+  const [apiHash, setApiHash] = useState("");
+
+  const save = useMutation({
+    mutationFn: () => apiPost("/tg-credentials", { apiId, apiHash }),
+    onSuccess: (res: any) => {
+      if (res.ok) {
+        qc.invalidateQueries({ queryKey: ["tg-credentials"] });
+        setApiId(""); setApiHash("");
+        toast({ title: "Telegram API keys saved", description: res.message });
+      } else {
+        toast({ title: "Couldn't save", description: res.message, variant: "destructive" });
+      }
+    },
+    onError: (e: any) => toast({ title: "Failed", description: e?.message, variant: "destructive" }),
+  });
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2"><KeyRound className="w-4 h-4" /> Telegram API Keys</CardTitle>
+        <CardDescription>Required to log in and scrape groups. Get them free at my.telegram.org → API development tools.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${data?.hasCreds ? "bg-green-500" : "bg-yellow-500"}`} />
+          <p className="text-xs text-muted-foreground">{data?.hasCreds ? "API keys are configured" : "Not configured yet"}</p>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs text-muted-foreground">API ID</Label>
+            <Input value={apiId} onChange={e => setApiId(e.target.value)} placeholder="1234567" className="mt-1 font-mono" inputMode="numeric" />
+          </div>
+          <div>
+            <Label className="text-xs text-muted-foreground">API Hash</Label>
+            <Input value={apiHash} onChange={e => setApiHash(e.target.value)} placeholder={data?.hasCreds ? "•••••• (leave blank to keep)" : "abcdef0123…"} className="mt-1 font-mono" />
+          </div>
+        </div>
+        <Button size="sm" onClick={() => save.mutate()} disabled={!apiId.trim() || !apiHash.trim() || save.isPending}>
+          {save.isPending ? "Saving…" : "Save API Keys"}
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
 
 function ApiServersCard() {
   const { toast } = useToast();
@@ -158,6 +209,8 @@ export default function Settings() {
         </div>
 
         <ApiServersCard />
+
+        <TelegramCredsCard />
 
         {/* Bot basics */}
         <Card>

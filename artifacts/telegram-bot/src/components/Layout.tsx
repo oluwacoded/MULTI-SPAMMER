@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Send, MessageSquare, Zap, Settings, LogIn, Radio, Menu, X, BookUser, History, Server, Check } from "lucide-react";
+import { LayoutDashboard, Send, MessageSquare, Zap, Settings, LogIn, Radio, Menu, X, BookUser, History, Server, Check, Users, Mail, MessageCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useGetBotStatus } from "@workspace/api-client-react";
 import { setBaseUrl } from "@workspace/api-client-react";
@@ -8,6 +8,9 @@ import { setBaseUrl } from "@workspace/api-client-react";
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/tg-campaign", label: "TG Campaign", icon: Send },
+  { href: "/tg-scraper", label: "Group Scraper", icon: Users },
+  { href: "/gmail", label: "Gmail", icon: Mail },
+  { href: "/whatsapp", label: "WhatsApp", icon: MessageCircle },
   { href: "/campaign-history", label: "History", icon: History },
   { href: "/contact-lists", label: "Contact Lists", icon: BookUser },
   { href: "/sms-campaign", label: "SMS Campaign", icon: MessageSquare },
