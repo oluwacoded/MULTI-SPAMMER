@@ -1,4 +1,5 @@
 - [API server dev workflow](api-server-dev.md) — dev script rebuilds then runs from dist; restart the workflow to pick up backend src changes, and test via /api on the shared proxy.
 - [scure/noble v2 API quirks](scure-noble-v2.md) — v2 needs `.js`-suffixed subpaths; `secp256k1.Point.fromHex` takes a hex string (use bytesToHex) and `toBytes(false)` for uncompressed.
+- [Wallet recovery on-chain scan](wallet-recovery-onchain-scan.md) — optional scan may send only public addresses (never seed); gate all "offline" UI claims on effective run mode; ETH nonce ≠ full tx history.
 - [SMS Gateway webhook HMAC](sms-gateway-webhook-hmac.md) — inbound webhook signature verifies raw bytes via the express.json `verify` callback (req.rawBody); removing it silently breaks signed webhooks.
 - [SMS Gateway SSRF guard](sms-gateway-ssrf.md) — user-supplied device base URLs are fetched server-side; validate https + block private/reserved IPs at save time (validateBaseUrl), not just UI.

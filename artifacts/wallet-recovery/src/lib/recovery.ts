@@ -107,16 +107,34 @@ export interface RecoveryRequest {
   targetAddress: string | null;
   addressIndexCount: number;
   maxCombos: number;
+  scanOnChain: boolean;
+}
+
+export interface ActivityHit {
+  address: string;
+  chain: string;
+  balance: string;
+  txCount: number;
 }
 
 export interface RecoveryMatch {
   mnemonic: string;
   addresses: DerivedAddress[];
   matchedAddress?: DerivedAddress;
+  activity?: ActivityHit;
 }
 
+export type LogLevel = "info" | "ok" | "warn" | "hit";
+
 export type WorkerOutbound =
-  | { type: "progress"; tested: number; total: number; validChecksums: number }
+  | {
+      type: "progress";
+      tested: number;
+      total: number;
+      validChecksums: number;
+      checked: number;
+    }
+  | { type: "log"; level: LogLevel; line: string }
   | {
       type: "done";
       tested: number;
