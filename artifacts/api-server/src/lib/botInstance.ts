@@ -102,9 +102,26 @@ class TelegramBotEngine {
     this.init();
   }
 
+  getTgCreds(): { apiId: number; apiHash: string } {
+    const saved = readJSON("tg_credentials.json", {});
+    const apiId = parseInt(String(saved.apiId || process.env.TG_API_ID || "0"));
+    const apiHash = String(saved.apiHash || process.env.TG_API_HASH || "");
+    return { apiId, apiHash };
+  }
+
+  hasTgCreds(): boolean {
+    const { apiId, apiHash } = this.getTgCreds();
+    return !!apiId && !!apiHash;
+  }
+
+  setTgCreds(apiId: number | string, apiHash: string) {
+    const id = parseInt(String(apiId));
+    if (!id || !apiHash) throw new Error("apiId and apiHash required");
+    writeJSON("tg_credentials.json", { apiId: id, apiHash });
+  }
+
   private async init() {
-    const apiId = parseInt(process.env.TG_API_ID || "0");
-    const apiHash = process.env.TG_API_HASH || "";
+    const { apiId, apiHash } = this.getTgCreds();
     if (!apiId || !apiHash) {
       console.log("[Bot] ⚠️  TG_API_ID and TG_API_HASH not set. Dashboard available.");
       return;
@@ -139,9 +156,8 @@ class TelegramBotEngine {
   }
 
   async startLogin(phone: string) {
-    const apiId = parseInt(process.env.TG_API_ID || "0");
-    const apiHash = process.env.TG_API_HASH || "";
-    if (!apiId || !apiHash) throw new Error("TG_API_ID and TG_API_HASH env vars required");
+    const { apiId, apiHash } = this.getTgCreds();
+    if (!apiId || !apiHash) throw new Error("Telegram API ID and API Hash required — save them in Settings first");
     const session = new StringSession("");
     this.tgClient = new TelegramClient(session, apiId, apiHash, { connectionRetries: 3 });
     this.tgClient.start({
@@ -182,6 +198,49 @@ class TelegramBotEngine {
     }
   }
 
+  // Scrape members of a Telegram group/channel using the logged-in session.
+  async scrapeGroup(link: string, limit = 5000): Promise<{ username: string | null; phone: string | null; name: string; id: string }[]> {
+    if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram — log in first");
+    if (!link || !link.trim()) throw new Error("Group link or username required");
+
+    // Normalise input: accept https://t.me/xxx, t.me/xxx, @xxx, or xxx
+    let target = link.trim();
+    target = target.replace(/^https?:\/\//i, "").replace(/^t\.me\//i, "").replace(/^@/, "");
+    target = target.replace(/\/+$/, "");
+    // Join links like joinchat/HASH or +HASH are invite links — not resolvable for scraping
+    if (/^(joinchat\/|\+)/i.test(target)) {
+      throw new Error("Private invite links can't be scraped. Use the group's public @username, or join the group and use its link.");
+    }
+
+    let entity: any;
+    try {
+      entity = await this.tgClient.getEntity(target);
+    } catch (e: any) {
+      throw new Error(`Could not find that group: ${e?.errorMessage || e?.message || "unknown error"}`);
+    }
+
+    let participants: any[] = [];
+    try {
+      participants = await this.tgClient.getParticipants(entity, { limit }) as any[];
+    } catch (e: any) {
+      const msg = e?.errorMessage || e?.message || "";
+      if (msg.includes("CHAT_ADMIN_REQUIRED") || msg.includes("ADMIN")) {
+        throw new Error("This group hides its members — admin rights are required to list them.");
+      }
+      throw new Error(`Could not pull members: ${msg || "unknown error"}`);
+    }
+
+    const members = participants
+      .filter((u: any) => u && !u.bot && !u.deleted)
+      .map((u: any) => ({
+        username: u.username || null,
+        phone: u.phone ? (u.phone.startsWith("+") ? u.phone : "+" + u.phone) : null,
+        name: [u.firstName, u.lastName].filter(Boolean).join(" ") || u.username || "Member",
+        id: u.id?.toString() || "",
+      }));
+    return members;
+  }
+
   getStatus() {
     const cs = this.getCampaignStatus();
     return {
@@ -193,6 +252,7 @@ class TelegramBotEngine {
       hasGroqKey: !!process.env.GROQ_API_KEY,
       hasSmmKey: !!(process.env.SMM_API_KEY || this.settings.smmApiKey),
       hasSmsKey: !!(this.settings.smsApiKey || process.env.SMS_API_KEY || process.env.TWILIO_ACCOUNT_SID || process.env.TERMII_API_KEY),
+      hasTgCreds: this.hasTgCreds(),
       campaign: cs,
       smsCampaign: null
     };

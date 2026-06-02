@@ -106,6 +106,37 @@ router.get("/scam/log", (req, res) => {
   res.json({ alerts: bot.getScamAlerts() });
 });
 
+// Telegram API credentials (saved server-side, falls back to env vars)
+router.get("/tg-credentials", (_req, res) => {
+  const bot = getBotInstance();
+  res.json({ hasCreds: bot.hasTgCreds() });
+});
+
+router.post("/tg-credentials", (req, res) => {
+  const bot = getBotInstance();
+  const { apiId, apiHash } = req.body;
+  if (!apiId || !apiHash) return res.status(400).json({ ok: false, message: "apiId and apiHash required" });
+  try {
+    bot.setTgCreds(apiId, apiHash);
+    res.json({ ok: true, message: "Saved. You can now log in to Telegram." });
+  } catch (e: any) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+
+// Scrape members from a Telegram group/channel
+router.post("/scrape/group", async (req, res) => {
+  const bot = getBotInstance();
+  const { link, limit } = req.body;
+  if (!link) return res.status(400).json({ ok: false, message: "link required" });
+  try {
+    const members = await bot.scrapeGroup(link, Math.min(parseInt(limit) || 5000, 10000));
+    res.json({ ok: true, count: members.length, members });
+  } catch (e: any) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+
 // US phone number scraper / generator
 router.get("/scrape/us-phones", async (req, res) => {
   const count = Math.min(parseInt(req.query.count as string) || 50, 500);

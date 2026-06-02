@@ -47,3 +47,11 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# App runtime data (sessions, credentials, campaign history, auth state)
+artifacts/api-server/data/
+**/whatsapp-auth/
+**/tg_session.json
+**/settings.json
+*.env
+.env.local
