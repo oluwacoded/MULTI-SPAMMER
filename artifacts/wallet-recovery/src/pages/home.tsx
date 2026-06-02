@@ -12,7 +12,13 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { useToast } from "@/hooks/use-toast";
 import { parseTemplate } from "@/lib/recovery";
 import type { RecoveryMatch, WorkerOutbound, RecoveryRequest, LogLevel } from "@/lib/recovery";
-import { checkActivity, type ActivityResult } from "@/lib/balance";
+import {
+  checkActivity,
+  getRecentTransactions,
+  explorerAddressUrl,
+  type ActivityResult,
+  type TxSummary,
+} from "@/lib/balance";
 
 const MAX_COMBOS = 5_000_000;
 const MAX_LOG_LINES = 250;
@@ -85,14 +91,15 @@ function CopyButton({ value }: { value: string }) {
 
 function MatchCard({ match, isTarget }: { match: RecoveryMatch; isTarget: boolean }) {
   const [balances, setBalances] = useState<Record<string, ActivityResult> | null>(null);
-  const [checkingBal, setCheckingBal] = useState(false);
+  const [txs, setTxs] = useState<Record<string, TxSummary[]>>({});
+  const [loading, setLoading] = useState(false);
   const [balError, setBalError] = useState<string | null>(null);
 
-  const checkBalances = async () => {
-    setCheckingBal(true);
+  const loadWallet = async () => {
+    setLoading(true);
     setBalError(null);
     try {
-      const entries = await Promise.all(
+      const balEntries = await Promise.all(
         match.addresses.map(async (a) => {
           try {
             return [a.address, await checkActivity(a.kind, a.address)] as const;
@@ -101,16 +108,29 @@ function MatchCard({ match, isTarget }: { match: RecoveryMatch; isTarget: boolea
           }
         }),
       );
-      const ok = entries.filter(
+      const ok = balEntries.filter(
         (e): e is readonly [string, ActivityResult] => e !== null,
       );
       if (ok.length === 0) {
         setBalError("Couldn't reach the block explorers — check your connection and try again.");
-      } else {
-        setBalances(Object.fromEntries(ok));
+        return;
       }
+      const balMap = Object.fromEntries(ok);
+      setBalances(balMap);
+
+      const active = match.addresses.filter((a) => balMap[a.address]?.hasActivity);
+      const txEntries = await Promise.all(
+        active.map(async (a) => {
+          try {
+            return [a.address, await getRecentTransactions(a.kind, a.address)] as const;
+          } catch {
+            return [a.address, [] as TxSummary[]] as const;
+          }
+        }),
+      );
+      setTxs(Object.fromEntries(txEntries));
     } finally {
-      setCheckingBal(false);
+      setLoading(false);
     }
   };
 
@@ -150,20 +170,20 @@ function MatchCard({ match, isTarget }: { match: RecoveryMatch; isTarget: boolea
                 variant="outline"
                 size="sm"
                 className="h-8 gap-1.5 text-xs"
-                onClick={checkBalances}
-                disabled={checkingBal}
+                onClick={loadWallet}
+                disabled={loading}
                 data-testid="button-check-balances"
               >
-                {checkingBal ? (
+                {loading ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <Wallet className="h-3.5 w-3.5" />
                 )}
-                {checkingBal
+                {loading
                   ? "Checking each network…"
                   : balances
-                    ? "Refresh balances"
-                    : "Check balances on each network"}
+                    ? "Refresh balances & transactions"
+                    : "Check balances & transactions"}
               </Button>
               {balances && (
                 <span className="text-xs text-muted-foreground" data-testid="text-balance-summary">
@@ -185,31 +205,79 @@ function MatchCard({ match, isTarget }: { match: RecoveryMatch; isTarget: boolea
           {match.addresses.map((a) => {
             const matched = match.matchedAddress?.path === a.path;
             const bal = balances?.[a.address];
+            const addrTxs = txs[a.address] ?? [];
             return (
               <div
                 key={a.path}
-                className={`flex flex-col gap-0.5 rounded-md border px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between ${matched || bal?.hasActivity ? "border-emerald-500/50 bg-emerald-500/10" : ""}`}
+                className={`rounded-md border px-3 py-2 text-xs ${matched || bal?.hasActivity ? "border-emerald-500/50 bg-emerald-500/10" : ""}`}
               >
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{a.label}</span>
-                  <span className="text-muted-foreground">{a.path}</span>
+                <div className="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{a.label}</span>
+                    <span className="text-muted-foreground">{a.path}</span>
+                  </div>
+                  <div className="flex flex-col gap-0.5 sm:items-end">
+                    <span className="font-mono break-all">{a.address}</span>
+                    {bal && (
+                      <span
+                        className={
+                          bal.hasActivity
+                            ? "font-medium text-emerald-600 dark:text-emerald-400"
+                            : "text-muted-foreground"
+                        }
+                        data-testid="text-address-balance"
+                      >
+                        {bal.chain} · {bal.balance}
+                        {bal.txCount > 0 ? ` · ${bal.txCount} tx` : ""}
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <div className="flex flex-col gap-0.5 sm:items-end">
-                  <span className="font-mono break-all">{a.address}</span>
-                  {bal && (
-                    <span
-                      className={
-                        bal.hasActivity
-                          ? "font-medium text-emerald-600 dark:text-emerald-400"
-                          : "text-muted-foreground"
-                      }
-                      data-testid="text-address-balance"
+                {bal?.hasActivity && (
+                  <div className="mt-2 space-y-1 border-t border-border/60 pt-2" data-testid="list-transactions">
+                    {addrTxs.map((t) => (
+                      <a
+                        key={t.hash}
+                        href={t.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-between gap-2 rounded px-1 py-0.5 hover:bg-emerald-500/10"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <span
+                            className={
+                              t.direction === "in"
+                                ? "font-medium text-emerald-600 dark:text-emerald-400"
+                                : t.direction === "out"
+                                  ? "font-medium text-amber-600 dark:text-amber-400"
+                                  : "text-muted-foreground"
+                            }
+                          >
+                            {t.direction === "in"
+                              ? "Received"
+                              : t.direction === "out"
+                                ? "Sent"
+                                : t.direction === "self"
+                                  ? "Self"
+                                  : "Tx"}
+                          </span>
+                          <span className="font-mono">{t.amount}</span>
+                        </span>
+                        <span className="text-muted-foreground">
+                          {t.time ? new Date(t.time * 1000).toLocaleDateString() : "pending"}
+                        </span>
+                      </a>
+                    ))}
+                    <a
+                      href={explorerAddressUrl(a.kind, a.address)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block text-[11px] text-muted-foreground underline-offset-2 hover:underline"
                     >
-                      {bal.chain} · {bal.balance}
-                      {bal.txCount > 0 ? ` · ${bal.txCount} tx` : ""}
-                    </span>
-                  )}
-                </div>
+                      {addrTxs.length === 0 ? "View transaction history on explorer →" : "Full history on explorer →"}
+                    </a>
+                  </div>
+                )}
               </div>
             );
           })}
