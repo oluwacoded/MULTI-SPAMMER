@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/wallet-recovery/"
+title = "Wallet Recovery"
+version = "1.0.0"
+id = "artifacts/wallet-recovery"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/wallet-recovery/" ]
+localPort = 20689
+
+[services.development]
+run = "pnpm --filter @workspace/wallet-recovery run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/wallet-recovery", "run", "build" ]
+publicDir = "artifacts/wallet-recovery/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20689"
+BASE_PATH = "/wallet-recovery/"
