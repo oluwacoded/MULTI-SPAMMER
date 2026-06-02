@@ -1,1 +1,2 @@
 - [API server dev workflow](api-server-dev.md) — dev script rebuilds then runs from dist; restart the workflow to pick up backend src changes, and test via /api on the shared proxy.
+- [SMS Gateway webhook HMAC](sms-gateway-webhook-hmac.md) — inbound webhook signature verifies raw bytes via the express.json `verify` callback (req.rawBody); removing it silently breaks signed webhooks.

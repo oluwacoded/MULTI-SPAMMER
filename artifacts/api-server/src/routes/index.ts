@@ -5,6 +5,7 @@ import smsRouter from "./sms.js";
 import dataRouter from "./data.js";
 import gmailRouter from "./gmail.js";
 import whatsappRouter from "./whatsapp.js";
+import gatewayRouter from "./gateway.js";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(smsRouter);
 router.use(dataRouter);
 router.use(gmailRouter);
 router.use(whatsappRouter);
+router.use(gatewayRouter);
 
 export default router;
