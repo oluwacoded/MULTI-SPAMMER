@@ -14,6 +14,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { CheckCircle2, AlertCircle, ShoppingBag, ArrowRight } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatMoney, currencySymbol } from "@/lib/utils";
 
 const orderSchema = z.object({
   service: z.string().min(1, "Please select a service"),
@@ -162,7 +163,7 @@ export default function Order() {
                                     .filter(s => s.category === cat)
                                     .map(s => (
                                       <SelectItem key={s.service} value={s.service} className="cursor-pointer">
-                                        ID: {s.service} - {s.name} (${parseFloat(s.rate).toFixed(2)}/1k)
+                                        ID: {s.service} - {s.name} ({formatMoney(s.rate)}/1k)
                                       </SelectItem>
                                     ))}
                                 </React.Fragment>
@@ -235,7 +236,7 @@ export default function Order() {
                   <div className="space-y-4">
                     <div>
                       <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 font-semibold">Service Rate</div>
-                      <div className="font-mono">${parseFloat(selectedService.rate).toFixed(3)} <span className="text-muted-foreground text-sm">per 1000</span></div>
+                      <div className="font-mono">{formatMoney(selectedService.rate, undefined, 3)} <span className="text-muted-foreground text-sm">per 1000</span></div>
                     </div>
                     
                     <div className="w-full h-px bg-border my-2"></div>
@@ -243,7 +244,7 @@ export default function Order() {
                     <div>
                       <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 font-semibold">Total Charge</div>
                       <div className="text-4xl font-bold tracking-tight text-primary flex items-baseline gap-1" data-testid="display-total">
-                        <span className="text-2xl">$</span>
+                        <span className="text-2xl">{currencySymbol()}</span>
                         {totalCost.toFixed(3)}
                       </div>
                     </div>
