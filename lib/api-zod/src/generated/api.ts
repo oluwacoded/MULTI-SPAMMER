@@ -346,6 +346,66 @@ export const WalletTopupResponse = zod.object({
 
 
 /**
+ * @summary List all SMM services grouped by category
+ */
+export const GetSmmServicesResponse = zod.object({
+  "services": zod.array(zod.object({
+  "service": zod.string(),
+  "name": zod.string(),
+  "type": zod.string(),
+  "rate": zod.string(),
+  "min": zod.string(),
+  "max": zod.string(),
+  "category": zod.string(),
+  "description": zod.string().nullish()
+})),
+  "categories": zod.array(zod.string())
+})
+
+
+/**
+ * @summary Place a new SMM order
+ */
+export const PlaceSmmOrderBody = zod.object({
+  "service": zod.string(),
+  "link": zod.string(),
+  "quantity": zod.number()
+})
+
+export const PlaceSmmOrderResponse = zod.object({
+  "ok": zod.boolean(),
+  "orderId": zod.string().nullish(),
+  "message": zod.string().nullish()
+})
+
+
+/**
+ * @summary Check order status
+ */
+export const GetSmmOrderStatusParams = zod.object({
+  "orderId": zod.coerce.string()
+})
+
+export const GetSmmOrderStatusResponse = zod.object({
+  "orderId": zod.string(),
+  "status": zod.string(),
+  "charge": zod.string().nullish(),
+  "startCount": zod.string().nullish(),
+  "remains": zod.string().nullish(),
+  "currency": zod.string().nullish()
+})
+
+
+/**
+ * @summary Get SMM account balance
+ */
+export const GetSmmBalanceResponse = zod.object({
+  "balance": zod.string(),
+  "currency": zod.string()
+})
+
+
+/**
  * @summary Get scam alert log
  */
 export const GetScamLogResponse = zod.object({

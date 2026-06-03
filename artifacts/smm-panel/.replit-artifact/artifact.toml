@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/smm-panel/"
+title = "MFG SMM Panel"
+version = "1.0.0"
+id = "artifacts/smm-panel"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/smm-panel/" ]
+localPort = 23639
+
+[services.development]
+run = "pnpm --filter @workspace/smm-panel run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/smm-panel", "run", "build" ]
+publicDir = "artifacts/smm-panel/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23639"
+BASE_PATH = "/smm-panel/"

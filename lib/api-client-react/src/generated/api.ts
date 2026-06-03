@@ -31,6 +31,11 @@ import type {
   LoginStartInput,
   ScamAlertList,
   SimpleResult,
+  SmmBalance,
+  SmmOrderInput,
+  SmmOrderResult,
+  SmmOrderStatus,
+  SmmServiceList,
   SmsCampaignInput,
   SmsCampaignStatus,
   SmsFlashInput,
@@ -1446,6 +1451,308 @@ export const useWalletTopup = <TError = ErrorType<unknown>,
       > => {
       return useMutation(getWalletTopupMutationOptions(options));
     }
+
+export const getGetSmmServicesUrl = () => {
+
+
+
+
+  return `/api/smm/services`
+}
+
+/**
+ * @summary List all SMM services grouped by category
+ */
+export const getSmmServices = async ( options?: RequestInit): Promise<SmmServiceList> => {
+
+  return customFetch<SmmServiceList>(getGetSmmServicesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetSmmServicesQueryKey = () => {
+    return [
+    `/api/smm/services`
+    ] as const;
+    }
+
+
+export const getGetSmmServicesQueryOptions = <TData = Awaited<ReturnType<typeof getSmmServices>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmServices>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetSmmServicesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getSmmServices>>> = ({ signal }) => getSmmServices({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getSmmServices>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetSmmServicesQueryResult = NonNullable<Awaited<ReturnType<typeof getSmmServices>>>
+export type GetSmmServicesQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List all SMM services grouped by category
+ */
+
+export function useGetSmmServices<TData = Awaited<ReturnType<typeof getSmmServices>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmServices>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetSmmServicesQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getPlaceSmmOrderUrl = () => {
+
+
+
+
+  return `/api/smm/order`
+}
+
+/**
+ * @summary Place a new SMM order
+ */
+export const placeSmmOrder = async (smmOrderInput: SmmOrderInput, options?: RequestInit): Promise<SmmOrderResult> => {
+
+  return customFetch<SmmOrderResult>(getPlaceSmmOrderUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      smmOrderInput,)
+  }
+);}
+
+
+
+
+export const getPlaceSmmOrderMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof placeSmmOrder>>, TError,{data: BodyType<SmmOrderInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof placeSmmOrder>>, TError,{data: BodyType<SmmOrderInput>}, TContext> => {
+
+const mutationKey = ['placeSmmOrder'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof placeSmmOrder>>, {data: BodyType<SmmOrderInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  placeSmmOrder(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PlaceSmmOrderMutationResult = NonNullable<Awaited<ReturnType<typeof placeSmmOrder>>>
+    export type PlaceSmmOrderMutationBody = BodyType<SmmOrderInput>
+    export type PlaceSmmOrderMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Place a new SMM order
+ */
+export const usePlaceSmmOrder = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof placeSmmOrder>>, TError,{data: BodyType<SmmOrderInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof placeSmmOrder>>,
+        TError,
+        {data: BodyType<SmmOrderInput>},
+        TContext
+      > => {
+      return useMutation(getPlaceSmmOrderMutationOptions(options));
+    }
+
+export const getGetSmmOrderStatusUrl = (orderId: string,) => {
+
+
+
+
+  return `/api/smm/order/${orderId}`
+}
+
+/**
+ * @summary Check order status
+ */
+export const getSmmOrderStatus = async (orderId: string, options?: RequestInit): Promise<SmmOrderStatus> => {
+
+  return customFetch<SmmOrderStatus>(getGetSmmOrderStatusUrl(orderId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetSmmOrderStatusQueryKey = (orderId: string,) => {
+    return [
+    `/api/smm/order/${orderId}`
+    ] as const;
+    }
+
+
+export const getGetSmmOrderStatusQueryOptions = <TData = Awaited<ReturnType<typeof getSmmOrderStatus>>, TError = ErrorType<unknown>>(orderId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmOrderStatus>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetSmmOrderStatusQueryKey(orderId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getSmmOrderStatus>>> = ({ signal }) => getSmmOrderStatus(orderId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(orderId), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getSmmOrderStatus>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetSmmOrderStatusQueryResult = NonNullable<Awaited<ReturnType<typeof getSmmOrderStatus>>>
+export type GetSmmOrderStatusQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Check order status
+ */
+
+export function useGetSmmOrderStatus<TData = Awaited<ReturnType<typeof getSmmOrderStatus>>, TError = ErrorType<unknown>>(
+ orderId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmOrderStatus>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetSmmOrderStatusQueryOptions(orderId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getGetSmmBalanceUrl = () => {
+
+
+
+
+  return `/api/smm/balance`
+}
+
+/**
+ * @summary Get SMM account balance
+ */
+export const getSmmBalance = async ( options?: RequestInit): Promise<SmmBalance> => {
+
+  return customFetch<SmmBalance>(getGetSmmBalanceUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetSmmBalanceQueryKey = () => {
+    return [
+    `/api/smm/balance`
+    ] as const;
+    }
+
+
+export const getGetSmmBalanceQueryOptions = <TData = Awaited<ReturnType<typeof getSmmBalance>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmBalance>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetSmmBalanceQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getSmmBalance>>> = ({ signal }) => getSmmBalance({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getSmmBalance>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetSmmBalanceQueryResult = NonNullable<Awaited<ReturnType<typeof getSmmBalance>>>
+export type GetSmmBalanceQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get SMM account balance
+ */
+
+export function useGetSmmBalance<TData = Awaited<ReturnType<typeof getSmmBalance>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmBalance>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetSmmBalanceQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
 
 export const getGetScamLogUrl = () => {
 
