@@ -21,6 +21,8 @@ tags:
     description: Bot settings
   - name: wallet
     description: Wallet management
+  - name: smm
+    description: SMM panel services and orders
 
 paths:
   /healthz:
@@ -321,6 +323,70 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SimpleResult"
+
+  /smm/services:
+    get:
+      operationId: getSmmServices
+      tags: [smm]
+      summary: List all SMM services grouped by category
+      responses:
+        "200":
+          description: Service list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmmServiceList"
+
+  /smm/order:
+    post:
+      operationId: placeSmmOrder
+      tags: [smm]
+      summary: Place a new SMM order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmmOrderInput"
+      responses:
+        "200":
+          description: Order placed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmmOrderResult"
+
+  /smm/order/{orderId}:
+    get:
+      operationId: getSmmOrderStatus
+      tags: [smm]
+      summary: Check order status
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Order status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmmOrderStatus"
+
+  /smm/balance:
+    get:
+      operationId: getSmmBalance
+      tags: [smm]
+      summary: Get SMM account balance
+      responses:
+        "200":
+          description: Account balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmmBalance"
 
   /scam/log:
     get:
@@ -677,6 +743,88 @@ components:
         note:
           type: string
       required: [userId, amount]
+
+    SmmService:
+      type: object
+      properties:
+        service:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        rate:
+          type: string
+        min:
+          type: string
+        max:
+          type: string
+        category:
+          type: string
+        description:
+          type: ["string", "null"]
+      required: [service, name, type, rate, min, max, category]
+
+    SmmServiceList:
+      type: object
+      properties:
+        services:
+          type: array
+          items:
+            $ref: "#/components/schemas/SmmService"
+        categories:
+          type: array
+          items:
+            type: string
+      required: [services, categories]
+
+    SmmOrderInput:
+      type: object
+      properties:
+        service:
+          type: string
+        link:
+          type: string
+        quantity:
+          type: integer
+      required: [service, link, quantity]
+
+    SmmOrderResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        orderId:
+          type: ["string", "null"]
+        message:
+          type: ["string", "null"]
+      required: [ok]
+
+    SmmOrderStatus:
+      type: object
+      properties:
+        orderId:
+          type: string
+        status:
+          type: string
+        charge:
+          type: ["string", "null"]
+        startCount:
+          type: ["string", "null"]
+        remains:
+          type: ["string", "null"]
+        currency:
+          type: ["string", "null"]
+      required: [orderId, status]
+
+    SmmBalance:
+      type: object
+      properties:
+        balance:
+          type: string
+        currency:
+          type: string
+      required: [balance, currency]
 
     ScamAlert:
       type: object

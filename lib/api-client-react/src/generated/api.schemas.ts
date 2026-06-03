@@ -26,26 +26,14 @@ export type BotStatusMe = {
   name?: string | null;
 } | null;
 
-export interface CampaignLogEntry {
-  phone: string;
-  name: string;
-  status: 'sent' | 'no_telegram' | 'error' | 'flood_wait' | 'pending' | 'skipped';
-  error?: string;
-  at?: number;
-}
-
 export interface CampaignStatus {
   active: boolean;
   total?: number;
   sent?: number;
   failed?: number;
-  noTelegram?: number;
-  skipped?: number;
   percent?: number;
   elapsed?: number;
   remain?: number;
-  floodWait?: number;
-  log?: CampaignLogEntry[];
 }
 
 export interface SmsCampaignStatus {
@@ -133,13 +121,6 @@ export interface SmsHistoryList {
 export interface CampaignStartInput {
   contacts: Contact[];
   message: string;
-  minDelay?: number;
-  maxDelay?: number;
-  batchSize?: number;
-  batchPauseMin?: number;
-  typingDelay?: boolean;
-  autoVariation?: boolean;
-  dailyLimit?: number;
 }
 
 export interface LoginStartInput {
@@ -220,6 +201,55 @@ export interface WalletTopupInput {
   userId: string;
   amount: number;
   note?: string;
+}
+
+export interface SmmService {
+  service: string;
+  name: string;
+  type: string;
+  rate: string;
+  min: string;
+  max: string;
+  category: string;
+  /** @nullable */
+  description?: string | null;
+}
+
+export interface SmmServiceList {
+  services: SmmService[];
+  categories: string[];
+}
+
+export interface SmmOrderInput {
+  service: string;
+  link: string;
+  quantity: number;
+}
+
+export interface SmmOrderResult {
+  ok: boolean;
+  /** @nullable */
+  orderId?: string | null;
+  /** @nullable */
+  message?: string | null;
+}
+
+export interface SmmOrderStatus {
+  orderId: string;
+  status: string;
+  /** @nullable */
+  charge?: string | null;
+  /** @nullable */
+  startCount?: string | null;
+  /** @nullable */
+  remains?: string | null;
+  /** @nullable */
+  currency?: string | null;
+}
+
+export interface SmmBalance {
+  balance: string;
+  currency: string;
 }
 
 export interface ScamAlert {
