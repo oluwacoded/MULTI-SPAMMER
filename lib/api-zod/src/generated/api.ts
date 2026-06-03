@@ -388,20 +388,136 @@ export const GetSmmOrderStatusParams = zod.object({
 
 export const GetSmmOrderStatusResponse = zod.object({
   "orderId": zod.string(),
+  "providerOrderId": zod.string().nullish(),
+  "serviceName": zod.string().optional(),
+  "link": zod.string().optional(),
+  "quantity": zod.number().optional(),
   "status": zod.string(),
   "charge": zod.string().nullish(),
+  "currency": zod.string().nullish(),
   "startCount": zod.string().nullish(),
   "remains": zod.string().nullish(),
-  "currency": zod.string().nullish()
+  "createdAt": zod.string().optional()
 })
 
 
 /**
- * @summary Get SMM account balance
+ * @summary List the authenticated buyer's orders
  */
-export const GetSmmBalanceResponse = zod.object({
+export const GetSmmOrdersResponse = zod.object({
+  "orders": zod.array(zod.object({
+  "id": zod.string(),
+  "providerOrderId": zod.string().nullish(),
+  "service": zod.string(),
+  "serviceName": zod.string(),
+  "link": zod.string(),
+  "quantity": zod.number(),
+  "charge": zod.string(),
+  "currency": zod.string(),
+  "status": zod.string(),
+  "createdAt": zod.string()
+}))
+})
+
+
+/**
+ * @summary Create a buyer account
+ */
+export const SmmRegisterBody = zod.object({
+  "email": zod.string(),
+  "password": zod.string(),
+  "name": zod.string().optional()
+})
+
+export const SmmRegisterResponse = zod.object({
+  "token": zod.string(),
+  "user": zod.object({
+  "id": zod.number(),
+  "email": zod.string(),
+  "name": zod.string().nullish(),
   "balance": zod.string(),
   "currency": zod.string()
+})
+})
+
+
+/**
+ * @summary Log in to a buyer account
+ */
+export const SmmLoginBody = zod.object({
+  "email": zod.string(),
+  "password": zod.string()
+})
+
+export const SmmLoginResponse = zod.object({
+  "token": zod.string(),
+  "user": zod.object({
+  "id": zod.number(),
+  "email": zod.string(),
+  "name": zod.string().nullish(),
+  "balance": zod.string(),
+  "currency": zod.string()
+})
+})
+
+
+/**
+ * @summary Get the authenticated buyer
+ */
+export const GetSmmMeResponse = zod.object({
+  "user": zod.object({
+  "id": zod.number(),
+  "email": zod.string(),
+  "name": zod.string().nullish(),
+  "balance": zod.string(),
+  "currency": zod.string()
+})
+})
+
+
+/**
+ * @summary Get the buyer's wallet balance and ledger
+ */
+export const GetSmmWalletResponse = zod.object({
+  "balance": zod.string(),
+  "currency": zod.string(),
+  "transactions": zod.array(zod.object({
+  "id": zod.number(),
+  "type": zod.string(),
+  "amount": zod.string(),
+  "balanceAfter": zod.string(),
+  "status": zod.string(),
+  "description": zod.string().nullish(),
+  "createdAt": zod.string()
+}))
+})
+
+
+/**
+ * @summary Start a Flutterwave wallet deposit
+ */
+export const InitiateSmmDepositBody = zod.object({
+  "amount": zod.number(),
+  "redirectUrl": zod.string()
+})
+
+export const InitiateSmmDepositResponse = zod.object({
+  "link": zod.string(),
+  "reference": zod.string()
+})
+
+
+/**
+ * @summary Verify and credit a Flutterwave deposit
+ */
+export const VerifySmmDepositQueryParams = zod.object({
+  "tx_ref": zod.coerce.string(),
+  "transaction_id": zod.coerce.string().optional()
+})
+
+export const VerifySmmDepositResponse = zod.object({
+  "status": zod.string(),
+  "balance": zod.string()
 })
 
 

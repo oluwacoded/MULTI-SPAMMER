@@ -375,18 +375,125 @@ paths:
               schema:
                 $ref: "#/components/schemas/SmmOrderStatus"
 
-  /smm/balance:
+  /smm/orders:
     get:
-      operationId: getSmmBalance
+      operationId: getSmmOrders
       tags: [smm]
-      summary: Get SMM account balance
+      summary: List the authenticated buyer's orders
       responses:
         "200":
-          description: Account balance
+          description: Order history
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SmmBalance"
+                $ref: "#/components/schemas/SmmPanelOrderList"
+
+  /smm/auth/register:
+    post:
+      operationId: smmRegister
+      tags: [smm]
+      summary: Create a buyer account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmmRegisterInput"
+      responses:
+        "200":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmmAuthResult"
+
+  /smm/auth/login:
+    post:
+      operationId: smmLogin
+      tags: [smm]
+      summary: Log in to a buyer account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmmLoginInput"
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmmAuthResult"
+
+  /smm/auth/me:
+    get:
+      operationId: getSmmMe
+      tags: [smm]
+      summary: Get the authenticated buyer
+      responses:
+        "200":
+          description: Current buyer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmmMeResult"
+
+  /smm/wallet:
+    get:
+      operationId: getSmmWallet
+      tags: [smm]
+      summary: Get the buyer's wallet balance and ledger
+      responses:
+        "200":
+          description: Wallet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmmWallet"
+
+  /smm/deposit/initiate:
+    post:
+      operationId: initiateSmmDeposit
+      tags: [smm]
+      summary: Start a Flutterwave wallet deposit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmmDepositInput"
+      responses:
+        "200":
+          description: Payment link
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmmDepositInit"
+
+  /smm/deposit/verify:
+    get:
+      operationId: verifySmmDeposit
+      tags: [smm]
+      summary: Verify and credit a Flutterwave deposit
+      parameters:
+        - name: tx_ref
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: transaction_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmmDepositVerify"
 
   /scam/log:
     get:
@@ -805,26 +912,171 @@ components:
       properties:
         orderId:
           type: string
+        providerOrderId:
+          type: ["string", "null"]
+        serviceName:
+          type: string
+        link:
+          type: string
+        quantity:
+          type: integer
         status:
           type: string
         charge:
+          type: ["string", "null"]
+        currency:
           type: ["string", "null"]
         startCount:
           type: ["string", "null"]
         remains:
           type: ["string", "null"]
-        currency:
-          type: ["string", "null"]
+        createdAt:
+          type: string
       required: [orderId, status]
 
-    SmmBalance:
+    SmmUser:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        name:
+          type: ["string", "null"]
+        balance:
+          type: string
+        currency:
+          type: string
+      required: [id, email, balance, currency]
+
+    SmmRegisterInput:
+      type: object
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+        name:
+          type: string
+      required: [email, password]
+
+    SmmLoginInput:
+      type: object
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+      required: [email, password]
+
+    SmmAuthResult:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/SmmUser"
+      required: [token, user]
+
+    SmmMeResult:
+      type: object
+      properties:
+        user:
+          $ref: "#/components/schemas/SmmUser"
+      required: [user]
+
+    SmmWalletTransaction:
+      type: object
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+        amount:
+          type: string
+        balanceAfter:
+          type: string
+        status:
+          type: string
+        description:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+      required: [id, type, amount, balanceAfter, status, createdAt]
+
+    SmmWallet:
       type: object
       properties:
         balance:
           type: string
         currency:
           type: string
-      required: [balance, currency]
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SmmWalletTransaction"
+      required: [balance, currency, transactions]
+
+    SmmDepositInput:
+      type: object
+      properties:
+        amount:
+          type: number
+        redirectUrl:
+          type: string
+      required: [amount, redirectUrl]
+
+    SmmDepositInit:
+      type: object
+      properties:
+        link:
+          type: string
+        reference:
+          type: string
+      required: [link, reference]
+
+    SmmDepositVerify:
+      type: object
+      properties:
+        status:
+          type: string
+        balance:
+          type: string
+      required: [status, balance]
+
+    SmmPanelOrder:
+      type: object
+      properties:
+        id:
+          type: string
+        providerOrderId:
+          type: ["string", "null"]
+        service:
+          type: string
+        serviceName:
+          type: string
+        link:
+          type: string
+        quantity:
+          type: integer
+        charge:
+          type: string
+        currency:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+      required: [id, service, serviceName, link, quantity, charge, currency, status, createdAt]
+
+    SmmPanelOrderList:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: "#/components/schemas/SmmPanelOrder"
+      required: [orders]
 
     ScamAlert:
       type: object

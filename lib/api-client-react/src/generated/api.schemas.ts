@@ -236,20 +236,100 @@ export interface SmmOrderResult {
 
 export interface SmmOrderStatus {
   orderId: string;
+  /** @nullable */
+  providerOrderId?: string | null;
+  serviceName?: string;
+  link?: string;
+  quantity?: number;
   status: string;
   /** @nullable */
   charge?: string | null;
   /** @nullable */
+  currency?: string | null;
+  /** @nullable */
   startCount?: string | null;
   /** @nullable */
   remains?: string | null;
-  /** @nullable */
-  currency?: string | null;
+  createdAt?: string;
 }
 
-export interface SmmBalance {
+export interface SmmUser {
+  id: number;
+  email: string;
+  /** @nullable */
+  name?: string | null;
   balance: string;
   currency: string;
+}
+
+export interface SmmRegisterInput {
+  email: string;
+  password: string;
+  name?: string;
+}
+
+export interface SmmLoginInput {
+  email: string;
+  password: string;
+}
+
+export interface SmmAuthResult {
+  token: string;
+  user: SmmUser;
+}
+
+export interface SmmMeResult {
+  user: SmmUser;
+}
+
+export interface SmmWalletTransaction {
+  id: number;
+  type: string;
+  amount: string;
+  balanceAfter: string;
+  status: string;
+  /** @nullable */
+  description?: string | null;
+  createdAt: string;
+}
+
+export interface SmmWallet {
+  balance: string;
+  currency: string;
+  transactions: SmmWalletTransaction[];
+}
+
+export interface SmmDepositInput {
+  amount: number;
+  redirectUrl: string;
+}
+
+export interface SmmDepositInit {
+  link: string;
+  reference: string;
+}
+
+export interface SmmDepositVerify {
+  status: string;
+  balance: string;
+}
+
+export interface SmmPanelOrder {
+  id: string;
+  /** @nullable */
+  providerOrderId?: string | null;
+  service: string;
+  serviceName: string;
+  link: string;
+  quantity: number;
+  charge: string;
+  currency: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface SmmPanelOrderList {
+  orders: SmmPanelOrder[];
 }
 
 export interface ScamAlert {
@@ -261,4 +341,9 @@ export interface ScamAlert {
 export interface ScamAlertList {
   alerts: ScamAlert[];
 }
+
+export type VerifySmmDepositParams = {
+tx_ref: string;
+transaction_id?: string;
+};
 
