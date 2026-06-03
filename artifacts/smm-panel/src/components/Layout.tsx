@@ -2,6 +2,7 @@ import React from "react";
 import { Link, useLocation } from "wouter";
 import { useGetSmmBalance } from "@workspace/api-client-react";
 import { LayoutDashboard, ShoppingCart, Activity, Wallet, Layers } from "lucide-react";
+import { formatMoney } from "@/lib/utils";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
@@ -56,9 +57,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <div className="h-8 w-24 bg-secondary rounded animate-pulse mt-1"></div>
             ) : (
               <div className="text-2xl font-bold tracking-tight mt-1" data-testid="display-balance">
-                {balanceData?.currency === "USD" ? "$" : ""}
-                {balanceData?.balance}
-                {balanceData?.currency !== "USD" && ` ${balanceData?.currency}`}
+                {formatMoney(balanceData?.balance, balanceData?.currency)}
               </div>
             )}
           </div>
@@ -75,7 +74,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
           <div className="flex items-center gap-2 text-sm font-medium">
             <Wallet className="h-4 w-4 text-muted-foreground" />
-            <span>${balanceData?.balance || "0.00"}</span>
+            <span>{formatMoney(balanceData?.balance ?? 0, balanceData?.currency)}</span>
           </div>
         </header>
 

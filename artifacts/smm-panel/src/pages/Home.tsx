@@ -8,6 +8,7 @@ import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, Info, ShoppingCart } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatMoney } from "@/lib/utils";
 
 export default function Home() {
   const { data, isLoading } = useGetSmmServices();
@@ -102,7 +103,7 @@ export default function Home() {
                   <CardContent className="p-4 pt-2 flex-1">
                     <div className="flex items-end gap-1 mb-4">
                       <span className="text-2xl font-bold tracking-tight text-foreground">
-                        ${Number(service.rate).toFixed(2)}
+                        {formatMoney(service.rate)}
                       </span>
                       <span className="text-xs text-muted-foreground font-medium mb-1 uppercase tracking-wider">/ 1000</span>
                     </div>

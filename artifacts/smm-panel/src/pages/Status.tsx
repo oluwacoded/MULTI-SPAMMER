@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Search, Loader2, Clock, CheckCircle2, XCircle, Activity, AlertTriangle } from "lucide-react";
+import { formatMoney } from "@/lib/utils";
 
 export default function Status() {
   const searchParams = new URLSearchParams(window.location.search);
@@ -111,7 +112,7 @@ export default function Status() {
                   <div className="p-6">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Charge</p>
                     <p className="text-xl font-bold tracking-tight">
-                      {statusData.charge ? `$${parseFloat(statusData.charge).toFixed(3)}` : "—"}
+                      {statusData.charge ? formatMoney(statusData.charge, statusData.currency, 3) : "—"}
                     </p>
                   </div>
                   <div className="p-6">
