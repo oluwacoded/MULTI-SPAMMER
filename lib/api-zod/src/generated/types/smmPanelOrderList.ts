@@ -5,8 +5,8 @@
  * MFG Telegram Bot API
  * OpenAPI spec version: 0.1.0
  */
+import type { SmmPanelOrder } from './smmPanelOrder';
 
-export interface SmmBalance {
-  balance: string;
-  currency: string;
+export interface SmmPanelOrderList {
+  orders: SmmPanelOrder[];
 }

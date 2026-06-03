@@ -31,17 +31,26 @@ import type {
   LoginStartInput,
   ScamAlertList,
   SimpleResult,
-  SmmBalance,
+  SmmAuthResult,
+  SmmDepositInit,
+  SmmDepositInput,
+  SmmDepositVerify,
+  SmmLoginInput,
+  SmmMeResult,
   SmmOrderInput,
   SmmOrderResult,
   SmmOrderStatus,
+  SmmPanelOrderList,
+  SmmRegisterInput,
   SmmServiceList,
+  SmmWallet,
   SmsCampaignInput,
   SmsCampaignStatus,
   SmsFlashInput,
   SmsFlashResult,
   SmsHistoryList,
   SmsProviderList,
+  VerifySmmDepositParams,
   Wallet,
   WalletTopupInput
 } from './api.schemas';
@@ -1677,20 +1686,20 @@ export function useGetSmmOrderStatus<TData = Awaited<ReturnType<typeof getSmmOrd
 
 
 
-export const getGetSmmBalanceUrl = () => {
+export const getGetSmmOrdersUrl = () => {
 
 
 
 
-  return `/api/smm/balance`
+  return `/api/smm/orders`
 }
 
 /**
- * @summary Get SMM account balance
+ * @summary List the authenticated buyer's orders
  */
-export const getSmmBalance = async ( options?: RequestInit): Promise<SmmBalance> => {
+export const getSmmOrders = async ( options?: RequestInit): Promise<SmmPanelOrderList> => {
 
-  return customFetch<SmmBalance>(getGetSmmBalanceUrl(),
+  return customFetch<SmmPanelOrderList>(getGetSmmOrdersUrl(),
   {
     ...options,
     method: 'GET'
@@ -1703,45 +1712,496 @@ export const getSmmBalance = async ( options?: RequestInit): Promise<SmmBalance>
 
 
 
-export const getGetSmmBalanceQueryKey = () => {
+export const getGetSmmOrdersQueryKey = () => {
     return [
-    `/api/smm/balance`
+    `/api/smm/orders`
     ] as const;
     }
 
 
-export const getGetSmmBalanceQueryOptions = <TData = Awaited<ReturnType<typeof getSmmBalance>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmBalance>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+export const getGetSmmOrdersQueryOptions = <TData = Awaited<ReturnType<typeof getSmmOrders>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmOrders>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getGetSmmBalanceQueryKey();
+  const queryKey =  queryOptions?.queryKey ?? getGetSmmOrdersQueryKey();
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getSmmBalance>>> = ({ signal }) => getSmmBalance({ signal, ...requestOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getSmmOrders>>> = ({ signal }) => getSmmOrders({ signal, ...requestOptions });
 
 
 
 
 
-   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getSmmBalance>>, TError, TData> & { queryKey: QueryKey }
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getSmmOrders>>, TError, TData> & { queryKey: QueryKey }
 }
 
-export type GetSmmBalanceQueryResult = NonNullable<Awaited<ReturnType<typeof getSmmBalance>>>
-export type GetSmmBalanceQueryError = ErrorType<unknown>
+export type GetSmmOrdersQueryResult = NonNullable<Awaited<ReturnType<typeof getSmmOrders>>>
+export type GetSmmOrdersQueryError = ErrorType<unknown>
 
 
 /**
- * @summary Get SMM account balance
+ * @summary List the authenticated buyer's orders
  */
 
-export function useGetSmmBalance<TData = Awaited<ReturnType<typeof getSmmBalance>>, TError = ErrorType<unknown>>(
-  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmBalance>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+export function useGetSmmOrders<TData = Awaited<ReturnType<typeof getSmmOrders>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmOrders>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
-  const queryOptions = getGetSmmBalanceQueryOptions(options)
+  const queryOptions = getGetSmmOrdersQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getSmmRegisterUrl = () => {
+
+
+
+
+  return `/api/smm/auth/register`
+}
+
+/**
+ * @summary Create a buyer account
+ */
+export const smmRegister = async (smmRegisterInput: SmmRegisterInput, options?: RequestInit): Promise<SmmAuthResult> => {
+
+  return customFetch<SmmAuthResult>(getSmmRegisterUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      smmRegisterInput,)
+  }
+);}
+
+
+
+
+export const getSmmRegisterMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof smmRegister>>, TError,{data: BodyType<SmmRegisterInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof smmRegister>>, TError,{data: BodyType<SmmRegisterInput>}, TContext> => {
+
+const mutationKey = ['smmRegister'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof smmRegister>>, {data: BodyType<SmmRegisterInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  smmRegister(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SmmRegisterMutationResult = NonNullable<Awaited<ReturnType<typeof smmRegister>>>
+    export type SmmRegisterMutationBody = BodyType<SmmRegisterInput>
+    export type SmmRegisterMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Create a buyer account
+ */
+export const useSmmRegister = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof smmRegister>>, TError,{data: BodyType<SmmRegisterInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof smmRegister>>,
+        TError,
+        {data: BodyType<SmmRegisterInput>},
+        TContext
+      > => {
+      return useMutation(getSmmRegisterMutationOptions(options));
+    }
+
+export const getSmmLoginUrl = () => {
+
+
+
+
+  return `/api/smm/auth/login`
+}
+
+/**
+ * @summary Log in to a buyer account
+ */
+export const smmLogin = async (smmLoginInput: SmmLoginInput, options?: RequestInit): Promise<SmmAuthResult> => {
+
+  return customFetch<SmmAuthResult>(getSmmLoginUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      smmLoginInput,)
+  }
+);}
+
+
+
+
+export const getSmmLoginMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof smmLogin>>, TError,{data: BodyType<SmmLoginInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof smmLogin>>, TError,{data: BodyType<SmmLoginInput>}, TContext> => {
+
+const mutationKey = ['smmLogin'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof smmLogin>>, {data: BodyType<SmmLoginInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  smmLogin(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SmmLoginMutationResult = NonNullable<Awaited<ReturnType<typeof smmLogin>>>
+    export type SmmLoginMutationBody = BodyType<SmmLoginInput>
+    export type SmmLoginMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Log in to a buyer account
+ */
+export const useSmmLogin = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof smmLogin>>, TError,{data: BodyType<SmmLoginInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof smmLogin>>,
+        TError,
+        {data: BodyType<SmmLoginInput>},
+        TContext
+      > => {
+      return useMutation(getSmmLoginMutationOptions(options));
+    }
+
+export const getGetSmmMeUrl = () => {
+
+
+
+
+  return `/api/smm/auth/me`
+}
+
+/**
+ * @summary Get the authenticated buyer
+ */
+export const getSmmMe = async ( options?: RequestInit): Promise<SmmMeResult> => {
+
+  return customFetch<SmmMeResult>(getGetSmmMeUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetSmmMeQueryKey = () => {
+    return [
+    `/api/smm/auth/me`
+    ] as const;
+    }
+
+
+export const getGetSmmMeQueryOptions = <TData = Awaited<ReturnType<typeof getSmmMe>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmMe>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetSmmMeQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getSmmMe>>> = ({ signal }) => getSmmMe({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getSmmMe>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetSmmMeQueryResult = NonNullable<Awaited<ReturnType<typeof getSmmMe>>>
+export type GetSmmMeQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get the authenticated buyer
+ */
+
+export function useGetSmmMe<TData = Awaited<ReturnType<typeof getSmmMe>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmMe>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetSmmMeQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getGetSmmWalletUrl = () => {
+
+
+
+
+  return `/api/smm/wallet`
+}
+
+/**
+ * @summary Get the buyer's wallet balance and ledger
+ */
+export const getSmmWallet = async ( options?: RequestInit): Promise<SmmWallet> => {
+
+  return customFetch<SmmWallet>(getGetSmmWalletUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetSmmWalletQueryKey = () => {
+    return [
+    `/api/smm/wallet`
+    ] as const;
+    }
+
+
+export const getGetSmmWalletQueryOptions = <TData = Awaited<ReturnType<typeof getSmmWallet>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmWallet>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetSmmWalletQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getSmmWallet>>> = ({ signal }) => getSmmWallet({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getSmmWallet>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetSmmWalletQueryResult = NonNullable<Awaited<ReturnType<typeof getSmmWallet>>>
+export type GetSmmWalletQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get the buyer's wallet balance and ledger
+ */
+
+export function useGetSmmWallet<TData = Awaited<ReturnType<typeof getSmmWallet>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSmmWallet>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetSmmWalletQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getInitiateSmmDepositUrl = () => {
+
+
+
+
+  return `/api/smm/deposit/initiate`
+}
+
+/**
+ * @summary Start a Flutterwave wallet deposit
+ */
+export const initiateSmmDeposit = async (smmDepositInput: SmmDepositInput, options?: RequestInit): Promise<SmmDepositInit> => {
+
+  return customFetch<SmmDepositInit>(getInitiateSmmDepositUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      smmDepositInput,)
+  }
+);}
+
+
+
+
+export const getInitiateSmmDepositMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof initiateSmmDeposit>>, TError,{data: BodyType<SmmDepositInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof initiateSmmDeposit>>, TError,{data: BodyType<SmmDepositInput>}, TContext> => {
+
+const mutationKey = ['initiateSmmDeposit'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof initiateSmmDeposit>>, {data: BodyType<SmmDepositInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  initiateSmmDeposit(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type InitiateSmmDepositMutationResult = NonNullable<Awaited<ReturnType<typeof initiateSmmDeposit>>>
+    export type InitiateSmmDepositMutationBody = BodyType<SmmDepositInput>
+    export type InitiateSmmDepositMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Start a Flutterwave wallet deposit
+ */
+export const useInitiateSmmDeposit = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof initiateSmmDeposit>>, TError,{data: BodyType<SmmDepositInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof initiateSmmDeposit>>,
+        TError,
+        {data: BodyType<SmmDepositInput>},
+        TContext
+      > => {
+      return useMutation(getInitiateSmmDepositMutationOptions(options));
+    }
+
+export const getVerifySmmDepositUrl = (params: VerifySmmDepositParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/smm/deposit/verify?${stringifiedParams}` : `/api/smm/deposit/verify`
+}
+
+/**
+ * @summary Verify and credit a Flutterwave deposit
+ */
+export const verifySmmDeposit = async (params: VerifySmmDepositParams, options?: RequestInit): Promise<SmmDepositVerify> => {
+
+  return customFetch<SmmDepositVerify>(getVerifySmmDepositUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getVerifySmmDepositQueryKey = (params?: VerifySmmDepositParams,) => {
+    return [
+    `/api/smm/deposit/verify`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getVerifySmmDepositQueryOptions = <TData = Awaited<ReturnType<typeof verifySmmDeposit>>, TError = ErrorType<unknown>>(params: VerifySmmDepositParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof verifySmmDeposit>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getVerifySmmDepositQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof verifySmmDeposit>>> = ({ signal }) => verifySmmDeposit(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof verifySmmDeposit>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type VerifySmmDepositQueryResult = NonNullable<Awaited<ReturnType<typeof verifySmmDeposit>>>
+export type VerifySmmDepositQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Verify and credit a Flutterwave deposit
+ */
+
+export function useVerifySmmDeposit<TData = Awaited<ReturnType<typeof verifySmmDeposit>>, TError = ErrorType<unknown>>(
+ params: VerifySmmDepositParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof verifySmmDeposit>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getVerifySmmDepositQueryOptions(params,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

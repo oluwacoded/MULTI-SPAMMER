@@ -7,6 +7,7 @@ import gmailRouter from "./gmail.js";
 import whatsappRouter from "./whatsapp.js";
 import gatewayRouter from "./gateway.js";
 import smmRouter from "./smm.js";
+import smmPanelRouter from "./smmPanel.js";
 
 const router: IRouter = Router();
 
@@ -18,5 +19,6 @@ router.use(gmailRouter);
 router.use(whatsappRouter);
 router.use(gatewayRouter);
 router.use(smmRouter);
+router.use(smmPanelRouter);
 
 export default router;

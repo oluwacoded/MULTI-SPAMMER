@@ -8,13 +8,19 @@
 
 export interface SmmOrderStatus {
   orderId: string;
+  /** @nullable */
+  providerOrderId?: string | null;
+  serviceName?: string;
+  link?: string;
+  quantity?: number;
   status: string;
   /** @nullable */
   charge?: string | null;
   /** @nullable */
+  currency?: string | null;
+  /** @nullable */
   startCount?: string | null;
   /** @nullable */
   remains?: string | null;
-  /** @nullable */
-  currency?: string | null;
+  createdAt?: string;
 }

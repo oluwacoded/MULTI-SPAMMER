@@ -1,11 +1,12 @@
 import { Router, type IRouter } from "express";
+import { applyMarkup } from "../lib/smmPricing.js";
 
 const router: IRouter = Router();
 
 const SMM_API = "https://reallysimplesocial.com/api/v2";
 const API_KEY = process.env.SMM_API_KEY ?? "";
 
-async function smmPost(params: Record<string, string>): Promise<unknown> {
+export async function smmPost(params: Record<string, string>): Promise<unknown> {
   const body = new URLSearchParams({ key: API_KEY, ...params });
   const res = await fetch(SMM_API, {
     method: "POST",
@@ -48,7 +49,8 @@ router.get("/smm/services", async (_req, res) => {
         service: String(s.service),
         name: String(s.name),
         type: String(s.type),
-        rate: String(s.rate),
+        // Buyers see the marked-up rate, never the raw provider cost.
+        rate: applyMarkup(Number(s.rate)).toString(),
         min: String(s.min),
         max: String(s.max),
         category: String(s.category),
@@ -64,85 +66,7 @@ router.get("/smm/services", async (_req, res) => {
   }
 });
 
-router.post("/smm/order", async (req, res) => {
-  try {
-    const { service, link, quantity } = req.body as {
-      service: string;
-      link: string;
-      quantity: number;
-    };
-
-    if (!service || !link || !quantity) {
-      res.status(400).json({ ok: false, message: "service, link and quantity are required" });
-      return;
-    }
-
-    const raw = (await smmPost({
-      action: "add",
-      service: String(service),
-      link: String(link),
-      quantity: String(quantity),
-    })) as { order?: number | string; error?: string };
-
-    if (raw.error) {
-      res.json({ ok: false, orderId: null, message: raw.error });
-      return;
-    }
-
-    res.json({ ok: true, orderId: raw.order ? String(raw.order) : null, message: null });
-  } catch (err) {
-    res.status(502).json({ ok: false, orderId: null, message: String(err) });
-  }
-});
-
-router.get("/smm/order/:orderId", async (req, res) => {
-  try {
-    const { orderId } = req.params;
-
-    const raw = (await smmPost({ action: "status", order: orderId })) as {
-      status?: string;
-      charge?: string;
-      start_count?: string;
-      remains?: string;
-      currency?: string;
-      error?: string;
-    };
-
-    if (raw.error) {
-      res.status(404).json({ orderId, status: "not_found", charge: null, startCount: null, remains: null, currency: null });
-      return;
-    }
-
-    res.json({
-      orderId,
-      status: raw.status ?? "unknown",
-      charge: raw.charge ?? null,
-      startCount: raw.start_count ?? null,
-      remains: raw.remains ?? null,
-      currency: raw.currency ?? null,
-    });
-  } catch (err) {
-    res.status(502).json({ orderId: req.params.orderId, status: "error", charge: null, startCount: null, remains: null, currency: null });
-  }
-});
-
-router.get("/smm/balance", async (_req, res) => {
-  try {
-    const raw = (await smmPost({ action: "balance" })) as {
-      balance?: string;
-      currency?: string;
-      error?: string;
-    };
-
-    if (raw.error) {
-      res.status(502).json({ balance: "0", currency: "USD" });
-      return;
-    }
-
-    res.json({ balance: raw.balance ?? "0", currency: raw.currency ?? "USD" });
-  } catch (err) {
-    res.status(502).json({ balance: "0", currency: "USD" });
-  }
-});
+// Order placement, status and balance are buyer-scoped and live in the
+// authenticated storefront router (smmPanel.ts).
 
 export default router;
