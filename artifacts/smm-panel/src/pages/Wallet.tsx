@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useGetSmmWallet, useInitiateSmmDeposit, useVerifySmmDeposit } from "@workspace/api-client-react";
+import { useGetSmmWallet, useInitiateSmmDeposit } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +13,6 @@ import type { SmmWalletTransaction } from "@workspace/api-client-react";
 export default function WalletPage() {
   const { data: walletData, isLoading, refetch } = useGetSmmWallet();
   const deposit = useInitiateSmmDeposit();
-  const verify = useVerifySmmDeposit();
   const { toast } = useToast();
   const [amount, setAmount] = useState("");
 
@@ -25,7 +24,7 @@ export default function WalletPage() {
     }
     try {
       const result = await deposit.mutateAsync({
-        data: { amount: num, redirectUrl: `${window.location.origin}/wallet`, currency: "NGN" },
+        data: { amount: num, redirectUrl: `${window.location.origin}/wallet` },
       });
       if (result.link) {
         window.location.href = result.link;
@@ -37,22 +36,14 @@ export default function WalletPage() {
     }
   };
 
-  const handleVerify = async () => {
+  const handleVerify = () => {
     const params = new URLSearchParams(window.location.search);
     const txRef = params.get("tx_ref");
     const transactionId = params.get("transaction_id");
-    if (!transactionId && !txRef) {
+    if (txRef && transactionId) {
+      window.location.href = `/api/smm/deposit/verify?tx_ref=${txRef}&transaction_id=${transactionId}`;
+    } else {
       toast({ title: "No transaction to verify", variant: "destructive" });
-      return;
-    }
-    try {
-      const result = await verify.mutateAsync({
-        data: { txRef: txRef || "", transactionId: transactionId || "" },
-      });
-      toast({ title: `Payment ${result.status}`, description: `Balance: ${result.balance}` });
-      refetch();
-    } catch (err: any) {
-      toast({ title: err?.data?.error || "Verification failed", variant: "destructive" });
     }
   };
 
@@ -103,8 +94,8 @@ export default function WalletPage() {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">Minimum deposit: ₦100. Payments are processed via Flutterwave.</p>
-            <Button variant="outline" onClick={handleVerify} disabled={verify.isPending} className="w-full">
-              {verify.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Verify Pending Payment"}
+            <Button variant="outline" onClick={handleVerify} className="w-full">
+              {"Verify Pending Payment"}
             </Button>
           </CardContent>
         </Card>
