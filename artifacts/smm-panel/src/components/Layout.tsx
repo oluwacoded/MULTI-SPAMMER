@@ -1,12 +1,12 @@
 import React from "react";
 import { Link, useLocation } from "wouter";
-import { useGetSmmBalance } from "@workspace/api-client-react";
+import { useGetSmmWallet } from "@workspace/api-client-react";
 import { LayoutDashboard, ShoppingCart, Activity, Wallet, Layers } from "lucide-react";
 import { formatMoney } from "@/lib/utils";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
-  const { data: balanceData, isLoading } = useGetSmmBalance();
+  const { data: balanceData, isLoading } = useGetSmmWallet();
 
   const navItems = [
     { label: "Catalog", path: "/", icon: LayoutDashboard },
