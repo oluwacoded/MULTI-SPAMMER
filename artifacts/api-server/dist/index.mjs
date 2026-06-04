@@ -100304,6 +100304,7 @@ router9.get("/smm/wallet", requireAuth2, async (req, res) => {
       amount: t.amount,
       balanceAfter: t.balanceAfter,
       status: t.status,
+      reference: t.reference ?? null,
       description: t.description ?? null,
       createdAt: t.createdAt.toISOString()
     }))

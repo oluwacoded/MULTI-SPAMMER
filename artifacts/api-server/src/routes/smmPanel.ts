@@ -152,6 +152,7 @@ router.get("/smm/wallet", requireAuth, async (req, res) => {
       amount: t.amount,
       balanceAfter: t.balanceAfter,
       status: t.status,
+      reference: t.reference ?? null,
       description: t.description ?? null,
       createdAt: t.createdAt.toISOString(),
     })),

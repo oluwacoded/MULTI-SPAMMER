@@ -289,6 +289,8 @@ export interface SmmWalletTransaction {
   balanceAfter: string;
   status: string;
   /** @nullable */
+  reference?: string | null;
+  /** @nullable */
   description?: string | null;
   createdAt: string;
 }

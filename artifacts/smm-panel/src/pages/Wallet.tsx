@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { useGetSmmWallet, useInitiateSmmDeposit } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -7,14 +7,36 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatMoney } from "@/lib/utils";
-import { Wallet, ArrowUpRight, ArrowDownRight, Loader2, Receipt, CreditCard } from "lucide-react";
+import { Wallet, ArrowUpRight, ArrowDownRight, Loader2, Receipt, CreditCard, TrendingUp, ShoppingCart, RotateCcw } from "lucide-react";
 import type { SmmWalletTransaction } from "@workspace/api-client-react";
+
+type FilterType = "all" | "deposit" | "order" | "refund";
+
+const FILTER_LABELS: { key: FilterType; label: string; icon: React.ReactNode }[] = [
+  { key: "all", label: "All", icon: null },
+  { key: "deposit", label: "Deposits", icon: <TrendingUp className="h-3 w-3" /> },
+  { key: "order", label: "Orders", icon: <ShoppingCart className="h-3 w-3" /> },
+  { key: "refund", label: "Refunds", icon: <RotateCcw className="h-3 w-3" /> },
+];
+
+function formatDateTime(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) +
+    " · " +
+    d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function txColor(type: string) {
+  if (type === "deposit" || type === "refund") return "text-emerald-500";
+  return "text-red-500";
+}
 
 export default function WalletPage() {
   const { data: walletData, isLoading, refetch } = useGetSmmWallet();
   const deposit = useInitiateSmmDeposit();
   const { toast } = useToast();
   const [amount, setAmount] = useState("");
+  const [filter, setFilter] = useState<FilterType>("all");
 
   const handleDeposit = async () => {
     const num = Number(amount);
@@ -47,6 +69,28 @@ export default function WalletPage() {
     }
   };
 
+  const allTxns = walletData?.transactions ?? [];
+
+  const summary = useMemo(() => {
+    const totalDeposited = allTxns
+      .filter((t) => t.type === "deposit" && t.status === "success")
+      .reduce((sum, t) => sum + Number(t.amount), 0);
+    const totalSpent = allTxns
+      .filter((t) => t.type === "order" && t.status === "success")
+      .reduce((sum, t) => sum + Math.abs(Number(t.amount)), 0);
+    const totalRefunded = allTxns
+      .filter((t) => t.type === "refund")
+      .reduce((sum, t) => sum + Number(t.amount), 0);
+    return { totalDeposited, totalSpent, totalRefunded };
+  }, [allTxns]);
+
+  const filtered = useMemo(
+    () => (filter === "all" ? allTxns : allTxns.filter((t) => t.type === filter)),
+    [allTxns, filter],
+  );
+
+  const currency = walletData?.currency;
+
   return (
     <div className="space-y-8 pb-10">
       <div>
@@ -67,7 +111,7 @@ export default function WalletPage() {
               <Skeleton className="h-12 w-40" />
             ) : (
               <div className="text-4xl font-bold tracking-tight">
-                {formatMoney(walletData?.balance, walletData?.currency)}
+                {formatMoney(walletData?.balance, currency)}
               </div>
             )}
           </CardContent>
@@ -95,18 +139,76 @@ export default function WalletPage() {
             </div>
             <p className="text-xs text-muted-foreground">Minimum deposit: ₦100. Payments are processed via Flutterwave.</p>
             <Button variant="outline" onClick={handleVerify} className="w-full">
-              {"Verify Pending Payment"}
+              Verify Pending Payment
             </Button>
           </CardContent>
         </Card>
       </div>
 
+      {!isLoading && allTxns.length > 0 && (
+        <div className="grid gap-4 grid-cols-3">
+          <Card>
+            <CardContent className="pt-4">
+              <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                <TrendingUp className="h-3 w-3 text-emerald-500" /> Total Deposited
+              </p>
+              <p className="text-xl font-bold text-emerald-500">
+                {formatMoney(String(summary.totalDeposited), currency)}
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-4">
+              <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                <ShoppingCart className="h-3 w-3 text-red-500" /> Total Spent
+              </p>
+              <p className="text-xl font-bold text-red-500">
+                {formatMoney(String(summary.totalSpent), currency)}
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-4">
+              <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                <RotateCcw className="h-3 w-3 text-blue-500" /> Total Refunded
+              </p>
+              <p className="text-xl font-bold text-blue-500">
+                {formatMoney(String(summary.totalRefunded), currency)}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Receipt className="h-4 w-4" />
-            Transaction History
-          </CardTitle>
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <CardTitle className="flex items-center gap-2">
+              <Receipt className="h-4 w-4" />
+              Transaction History
+            </CardTitle>
+            <div className="flex gap-1 bg-secondary rounded-lg p-1">
+              {FILTER_LABELS.map(({ key, label, icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setFilter(key)}
+                  className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    filter === key
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {icon}
+                  {label}
+                  {key !== "all" && (
+                    <span className="ml-1 text-[10px] opacity-60">
+                      ({allTxns.filter((t) => t.type === key).length})
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -115,9 +217,9 @@ export default function WalletPage() {
               <Skeleton className="h-10 w-full" />
               <Skeleton className="h-10 w-full" />
             </div>
-          ) : !walletData?.transactions?.length ? (
+          ) : !filtered.length ? (
             <div className="text-center py-8 text-muted-foreground text-sm">
-              No transactions yet.
+              {filter === "all" ? "No transactions yet." : `No ${filter} transactions yet.`}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -128,40 +230,64 @@ export default function WalletPage() {
                     <th className="pb-2 font-medium">Amount</th>
                     <th className="pb-2 font-medium">Balance After</th>
                     <th className="pb-2 font-medium">Status</th>
+                    <th className="pb-2 font-medium">Reference</th>
                     <th className="pb-2 font-medium">Description</th>
-                    <th className="pb-2 font-medium">Date</th>
+                    <th className="pb-2 font-medium whitespace-nowrap">Date & Time</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {walletData.transactions.map((tx: SmmWalletTransaction) => (
-                    <tr key={tx.id} className="hover:bg-secondary/30">
-                      <td className="py-3">
-                        <div className="flex items-center gap-1">
-                          {Number(tx.amount) >= 0 ? (
-                            <ArrowUpRight className="h-3 w-3 text-emerald-500" />
+                  {filtered.map((tx: SmmWalletTransaction) => {
+                    const isCredit = tx.type === "deposit" || tx.type === "refund";
+                    return (
+                      <tr key={tx.id} className="hover:bg-secondary/30">
+                        <td className="py-3">
+                          <div className="flex items-center gap-1">
+                            {isCredit ? (
+                              <ArrowUpRight className="h-3 w-3 text-emerald-500" />
+                            ) : (
+                              <ArrowDownRight className="h-3 w-3 text-red-500" />
+                            )}
+                            <span className="capitalize">{tx.type}</span>
+                          </div>
+                        </td>
+                        <td className={`py-3 font-mono font-medium ${txColor(tx.type)}`}>
+                          {isCredit ? "+" : ""}{formatMoney(tx.amount, currency)}
+                        </td>
+                        <td className="py-3 font-mono text-muted-foreground">
+                          {formatMoney(tx.balanceAfter, currency)}
+                        </td>
+                        <td className="py-3">
+                          <Badge
+                            variant={
+                              tx.status === "success"
+                                ? "default"
+                                : tx.status === "pending"
+                                ? "secondary"
+                                : "destructive"
+                            }
+                            className="text-xs capitalize"
+                          >
+                            {tx.status}
+                          </Badge>
+                        </td>
+                        <td className="py-3">
+                          {tx.reference ? (
+                            <span className="font-mono text-xs text-muted-foreground bg-secondary px-1.5 py-0.5 rounded">
+                              {tx.reference}
+                            </span>
                           ) : (
-                            <ArrowDownRight className="h-3 w-3 text-red-500" />
+                            <span className="text-muted-foreground/40 text-xs">—</span>
                           )}
-                          <span className="capitalize">{tx.type}</span>
-                        </div>
-                      </td>
-                      <td className="py-3 font-mono">
-                        {formatMoney(tx.amount, walletData?.currency)}
-                      </td>
-                      <td className="py-3 font-mono">
-                        {formatMoney(tx.balanceAfter, walletData?.currency)}
-                      </td>
-                      <td className="py-3">
-                        <Badge variant={tx.status === "success" ? "default" : "secondary"} className="text-xs capitalize">
-                          {tx.status}
-                        </Badge>
-                      </td>
-                      <td className="py-3 text-muted-foreground max-w-xs truncate">{tx.description}</td>
-                      <td className="py-3 text-muted-foreground whitespace-nowrap">
-                        {new Date(tx.createdAt).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="py-3 text-muted-foreground max-w-[200px] truncate">
+                          {tx.description ?? "—"}
+                        </td>
+                        <td className="py-3 text-muted-foreground text-xs whitespace-nowrap">
+                          {formatDateTime(tx.createdAt)}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
