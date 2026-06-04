@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, Info, ShoppingCart } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatMoney } from "@/lib/utils";
+import type { SmmService } from "@workspace/api-client-react";
 
 export default function Home() {
   const { data, isLoading } = useGetSmmServices();
@@ -22,7 +23,7 @@ export default function Home() {
 
   const filteredServices = useMemo(() => {
     if (!data?.services) return [];
-    return data.services.filter((s) => {
+    return data.services.filter((s: SmmService) => {
       const matchesSearch = s.name.toLowerCase().includes(search.toLowerCase()) || 
                            s.service.includes(search);
       const matchesCategory = activeCategory === "All" || s.category === activeCategory;
@@ -85,7 +86,7 @@ export default function Home() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {filteredServices.map(service => (
+              {filteredServices.map((service: SmmService) => (
                 <Card key={service.service} className="bg-card border-border hover:border-primary/50 transition-colors flex flex-col group">
                   <CardHeader className="p-4 pb-2">
                     <div className="flex justify-between items-start mb-2 gap-2">

@@ -15,6 +15,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { CheckCircle2, AlertCircle, ShoppingBag, ArrowRight } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatMoney, currencySymbol } from "@/lib/utils";
+import type { SmmService } from "@workspace/api-client-react";
 
 const orderSchema = z.object({
   service: z.string().min(1, "Please select a service"),
@@ -47,7 +48,7 @@ export default function Order() {
 
   const selectedService = useMemo(() => {
     if (!servicesData?.services || !selectedServiceId) return null;
-    return servicesData.services.find(s => s.service === selectedServiceId) || null;
+    return servicesData.services.find((s: SmmService) => s.service === selectedServiceId) || null;
   }, [servicesData, selectedServiceId]);
 
   // Update validation when service changes
@@ -88,7 +89,7 @@ export default function Order() {
     if (!selectedService) return;
     
     mutateRef.current({ data: values }, {
-      onSuccess: (result) => {
+      onSuccess: (result: any) => {
         if (result.ok && result.orderId) {
           toast({
             title: "Order Placed Successfully",
@@ -154,14 +155,14 @@ export default function Order() {
                               </SelectTrigger>
                             </FormControl>
                             <SelectContent className="max-h-[300px] border-border bg-popover">
-                              {servicesData?.categories.map(cat => (
+                              {servicesData?.categories.map((cat: string) => (
                                 <React.Fragment key={cat}>
                                   <div className="px-2 py-1.5 text-xs font-bold text-muted-foreground uppercase tracking-wider bg-secondary/50 mt-1 first:mt-0">
                                     {cat}
                                   </div>
                                   {servicesData.services
-                                    .filter(s => s.category === cat)
-                                    .map(s => (
+                                    .filter((s: SmmService) => s.category === cat)
+                                    .map((s: SmmService) => (
                                       <SelectItem key={s.service} value={s.service} className="cursor-pointer">
                                         ID: {s.service} - {s.name} ({formatMoney(s.rate)}/1k)
                                       </SelectItem>
