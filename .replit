@@ -16,14 +16,36 @@ GW_JWT_SECRET = "5ad7eb278793e81496ab3d44f4165986c2dfb7073a02393eeda3dfaa7e4a2a4
 SMM_API_KEY = "f50b7f2b620987cc1a9a906a3dc38e40"
 
 [workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "PORT=8080 pnpm --filter @workspace/api-server run dev & PORT=5000 pnpm --filter @workspace/telegram-bot run dev"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
 [[ports]]
 localPort = 5000
-externalPort = 5000
+externalPort = 80
 
 [[ports]]
 localPort = 8080
-externalPort = 80
+externalPort = 8080
 
 [[ports]]
 localPort = 8081
@@ -55,5 +77,5 @@ externalPort = 3001
 
 [deployment]
 deploymentTarget = "vm"
-run = ["bash", "-c", "NODE_ENV=production PORT=8080 node --enable-source-maps ./artifacts/api-server/dist/index.mjs"]
-build = ["bash", "-c", "pnpm install --frozen-lockfile && PORT=5000 BASE_PATH=/ pnpm --filter @workspace/telegram-bot run build && pnpm --filter @workspace/api-server run build"]
+run = ["bash", "-c", "PORT=8080 NODE_ENV=production node --enable-source-maps artifacts/api-server/dist/index.mjs"]
+build = ["bash", "-c", "pnpm install && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/telegram-bot run build"]
