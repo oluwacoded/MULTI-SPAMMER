@@ -497,7 +497,7 @@ class TelegramBotEngine {
       members: [], targetEntity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
       scrapePhase: sourceGroups.length > 0, currentSource: sourceGroups[0] || null,
       sourcesTotal: sourceGroups.length, sourcesDone: 0,
-      noCooldown: false, peerFloodStop: false,
+      noCooldown: false, peerFloodStop: false, fatalStop: false,
     };
 
     // Scrape each source group sequentially, then kick off the add loop
@@ -573,7 +573,7 @@ class TelegramBotEngine {
     this.addJob = {
       active: true, total: members.length, added: 0, failed: 0, privacy: 0, index: 0,
       members, targetEntity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
-      noCooldown: options.noCooldown !== false, peerFloodStop: false,
+      noCooldown: options.noCooldown !== false, peerFloodStop: false, fatalStop: false,
       scrapePhase: false, currentSource: null, sourcesTotal: 0, sourcesDone: 0,
     };
     this._addNext();
@@ -681,6 +681,19 @@ class TelegramBotEngine {
           logEntry.error = "PEER_FLOOD — account limited";
           this.addJob.failed++;
           this.addJob.peerFloodStop = true;
+        } else if (
+          msg.includes("CHAT_WRITE_FORBIDDEN") ||
+          msg.includes("CHAT_ADMIN_REQUIRED") ||
+          msg.includes("CHAT_ADMINS_REQUIRED") ||
+          msg.includes("CHANNEL_PRIVATE") ||
+          msg.includes("USER_NOT_PARTICIPANT")
+        ) {
+          // Target-level permission problem: it affects every member, so don't
+          // burn through the whole list — stop the job and explain why.
+          logEntry.status = "failed";
+          logEntry.error = "No permission to add to this group";
+          this.addJob.failed++;
+          this.addJob.fatalStop = true;
         } else if (msg.includes("USER_BOT")) {
           logEntry.status = "skipped";
           logEntry.error = "User is a bot";
@@ -693,6 +706,13 @@ class TelegramBotEngine {
         logEntry.at = Date.now();
       }
 
+      // Stop immediately if the account can't add to this target at all — the
+      // error affects every member, so there's no point retrying the whole list.
+      if (this.addJob.fatalStop) {
+        this.addJob.active = false;
+        this.addJob.log.push({ status: "stopped", msg: `⛔ Stopped: this account can't add members to the target group/channel. The connected Telegram account must be a member AND an admin there with "Add members" permission. (Telegram may also temporarily block adding if the account was recently rate-limited.) Added: ${this.addJob.added}.`, at: Date.now() });
+        return;
+      }
       // Stop immediately if Telegram flagged the account (PEER_FLOOD) — hammering risks a ban.
       if (this.addJob.peerFloodStop) {
         this.addJob.active = false;
