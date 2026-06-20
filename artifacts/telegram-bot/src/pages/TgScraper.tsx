@@ -29,7 +29,10 @@ export default function TgScraper() {
   const [saveDialog, setSaveDialog] = useState(false);
   const [listName, setListName] = useState("");
 
-  // Add-to-group state
+  // One-click scrape+add state
+  const [scrapeAddTarget, setScrapeAddTarget] = useState("");
+
+  // Add-to-group state (for scraped-members-in-memory flow)
   const [targetGroup, setTargetGroup] = useState("");
   const [addListId, setAddListId] = useState("");
   const [addListTarget, setAddListTarget] = useState("");
@@ -69,6 +72,21 @@ export default function TgScraper() {
       setListName("");
       toast({ title: "Saved to contact lists" });
     },
+  });
+
+  // One-click: scrape sourceGroup + immediately add to targetGroup
+  const startAddDirect = useMutation({
+    mutationFn: (data: { sourceGroup: string; targetGroup: string; limit: number }) =>
+      apiPost("/scrape/add-members", data),
+    onSuccess: (res: any) => {
+      if (res.ok) {
+        refetchAdd();
+        toast({ title: "Scrape & Add started", description: res.message });
+      } else {
+        toast({ title: "Failed to start", description: res.message, variant: "destructive" });
+      }
+    },
+    onError: (e: any) => toast({ title: "Request failed", description: e?.message, variant: "destructive" }),
   });
 
   const startAdd = useMutation({
@@ -199,6 +217,64 @@ export default function TgScraper() {
                 Most users hide their phone number, so you'll usually get @usernames.
               </p>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* ── One-click: Scrape & Auto-Add ─────────────────────────────────── */}
+        <Card className={addJobActive ? "border-primary/30" : ""}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Zap className="w-4 h-4 text-primary" /> Scrape &amp; Auto-Add (One Click)
+            </CardTitle>
+            <CardDescription>Enter a source group and your target group — the bot scrapes and adds members automatically, no intermediate step</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {addJobActive ? (
+              <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} />
+            ) : (
+              <>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Source group (to steal from)</Label>
+                    <Input
+                      value={link}
+                      onChange={e => setLink(e.target.value)}
+                      placeholder="@sourcegroup or t.me/…"
+                      className="mt-1 font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Your target group/channel</Label>
+                    <Input
+                      value={scrapeAddTarget}
+                      onChange={e => setScrapeAddTarget(e.target.value)}
+                      placeholder="@mygroup or t.me/…"
+                      className="mt-1 font-mono text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-end gap-2">
+                  <div className="w-28 shrink-0">
+                    <Label className="text-xs text-muted-foreground">Max members</Label>
+                    <Input type="number" min={1} max={10000} value={limit} onChange={e => setLimit(e.target.value)} className="mt-1 h-9" />
+                  </div>
+                  <Button
+                    className="flex-1"
+                    onClick={() => startAddDirect.mutate({ sourceGroup: link.trim(), targetGroup: scrapeAddTarget.trim(), limit: parseInt(limit) || 5000 })}
+                    disabled={!connected || !link.trim() || !scrapeAddTarget.trim() || startAddDirect.isPending}
+                  >
+                    {startAddDirect.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
+                    {startAddDirect.isPending ? "Starting…" : "Scrape & Add"}
+                  </Button>
+                </div>
+                <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50">
+                  <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                  <p className="text-xs text-muted-foreground">
+                    Scrapes source group first, then adds members one-by-one with a 2–5s delay. You can still use the scrape tool below to inspect members before adding.
+                  </p>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
 

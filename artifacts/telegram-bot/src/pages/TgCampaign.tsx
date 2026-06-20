@@ -20,7 +20,7 @@ import {
   Loader2, BookUser, Save, FileText, SkipForward, Search, Zap
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { apiPost } from "@/lib/api";
+import { apiPost, apiGet, apiFetch } from "@/lib/api";
 
 function parseVCF(text: string): Array<{ phone: string; name: string }> {
   const contacts: Array<{ phone: string; name: string }> = [];
@@ -88,22 +88,17 @@ export default function TgCampaign() {
 
   const { data: templatesData } = useQuery({
     queryKey: ["templates"],
-    queryFn: async () => { const r = await fetch("/api/templates"); return r.json(); },
+    queryFn: () => apiGet("/templates"),
   });
 
   const { data: listsData } = useQuery({
     queryKey: ["contact-lists"],
-    queryFn: async () => { const r = await fetch("/api/contact-lists"); return r.json(); },
+    queryFn: () => apiGet("/contact-lists"),
   });
 
   const saveList = useRQMutation({
-    mutationFn: async ({ name, contacts }: { name: string; contacts: any[] }) => {
-      const r = await fetch("/api/contact-lists", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, contacts }),
-      });
-      return r.json();
-    },
+    mutationFn: ({ name, contacts }: { name: string; contacts: any[] }) =>
+      apiPost("/contact-lists", { name, contacts }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["contact-lists"] });
       setSaveListDialog(false);
@@ -113,13 +108,8 @@ export default function TgCampaign() {
   });
 
   const saveTemplate = useRQMutation({
-    mutationFn: async ({ name, message }: { name: string; message: string }) => {
-      const r = await fetch("/api/templates", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, message }),
-      });
-      return r.json();
-    },
+    mutationFn: ({ name, message }: { name: string; message: string }) =>
+      apiPost("/templates", { name, message }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["templates"] });
       setSaveTemplateDialog(false);
@@ -129,8 +119,7 @@ export default function TgCampaign() {
   });
 
   const loadListContacts = async (id: string, name: string) => {
-    const r = await fetch(`/api/contact-lists/${id}`);
-    const data = await r.json();
+    const data = await apiGet(`/contact-lists/${id}`);
     if (data.contacts?.length) {
       setContacts(data.contacts);
       setLoadListDialog(false);
@@ -177,7 +166,7 @@ export default function TgCampaign() {
   const handleScrape = async () => {
     setScraping(true);
     try {
-      const resp = await fetch(`/api/scrape/us-phones?count=${scrapeCount}`);
+      const resp = await apiFetch(`/scrape/us-phones?count=${scrapeCount}`);
       const data = await resp.json();
       const parsed = (data.phones as string[]).map(p => ({ phone: p, name: p }));
       setContacts(parsed);
