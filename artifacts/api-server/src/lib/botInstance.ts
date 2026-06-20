@@ -5,6 +5,7 @@ import { NewMessage } from "telegram/events/index.js";
 import fs from "fs";
 import path from "path";
 import { execFile } from "child_process";
+import { persistConfig } from "./configStore.js";
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -18,6 +19,7 @@ function readJSON(file: string, def: any) {
 }
 function writeJSON(file: string, data: any) {
   try { fs.writeFileSync(path.join(DATA_DIR, file), JSON.stringify(data, null, 2)); } catch {}
+  persistConfig(file, data);
 }
 
 // ── Multi-account store ───────────────────────────────────────────────────────

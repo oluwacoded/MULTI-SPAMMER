@@ -1,5 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { restoreConfigToDisk } from "./lib/configStore";
+import { getBotInstance } from "./lib/botInstance";
 
 const rawPort = process.env["PORT"];
 
@@ -15,11 +17,21 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen(port, (err) => {
-  if (err) {
-    logger.error({ err }, "Error listening on port");
-    process.exit(1);
-  }
+async function main() {
+  // Restore credentials / Telegram sessions / settings from the database to
+  // disk BEFORE the bot engine reads them, so logins survive redeploys.
+  await restoreConfigToDisk();
 
-  logger.info({ port }, "Server listening");
-});
+  app.listen(port, (err) => {
+    if (err) {
+      logger.error({ err }, "Error listening on port");
+      process.exit(1);
+    }
+
+    logger.info({ port }, "Server listening");
+    // Construct the engine now so all logged-in accounts reconnect on boot.
+    getBotInstance();
+  });
+}
+
+main();

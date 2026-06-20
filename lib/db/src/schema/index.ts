@@ -1,3 +1,4 @@
 // Export your models here. Add one export per file.
 export * from "./smsGateway";
 export * from "./smmPanel";
+export * from "./appConfig";
