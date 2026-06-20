@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getBotInstance } from "../lib/botInstance.js";
+import { readSubdirItem } from "../lib/dataStore.js";
 
 const router = Router();
 
@@ -57,13 +58,13 @@ router.get("/campaign/status", (req, res) => {
 
 router.post("/campaign/start", async (req, res) => {
   const bot = getBotInstance();
-  const { contacts, message, minDelay, maxDelay, batchSize, batchPauseMin, typingDelay, autoVariation, dailyLimit } = req.body;
+  const { contacts, message, minDelay, maxDelay, batchSize, batchPauseMin, typingDelay, autoVariation, dailyLimit, noCooldown } = req.body;
   if (!contacts?.length || !message) {
     return res.status(400).json({ ok: false, message: "contacts and message required" });
   }
   try {
     await bot.startCampaignFromAPI(contacts, message, {
-      minDelay, maxDelay, batchSize, batchPauseMin, typingDelay, autoVariation, dailyLimit
+      minDelay, maxDelay, batchSize, batchPauseMin, typingDelay, autoVariation, dailyLimit, noCooldown
     });
     res.json({ ok: true, message: "Campaign started" });
   } catch (e: any) {
@@ -132,6 +133,59 @@ router.post("/scrape/group", async (req, res) => {
   try {
     const members = await bot.scrapeGroup(link, Math.min(parseInt(limit) || 5000, 10000));
     res.json({ ok: true, count: members.length, members });
+  } catch (e: any) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+
+// Add-members status & control
+router.get("/scrape/add-status", (req, res) => {
+  const bot = getBotInstance();
+  res.json(bot.getAddStatus());
+});
+
+router.post("/scrape/add-stop", (req, res) => {
+  const bot = getBotInstance();
+  bot.stopAddJob();
+  res.json({ ok: true, message: "Add job stopped" });
+});
+
+// Scrape source group then immediately add all members to target group
+router.post("/scrape/add-members", async (req, res) => {
+  const bot = getBotInstance();
+  const { sourceGroup, targetGroup, limit, members } = req.body;
+  if (!targetGroup) return res.status(400).json({ ok: false, message: "targetGroup required" });
+  try {
+    let toAdd = members;
+    if (!toAdd?.length && sourceGroup) {
+      toAdd = await bot.scrapeGroup(sourceGroup, Math.min(parseInt(limit) || 5000, 10000));
+    }
+    if (!toAdd?.length) return res.status(400).json({ ok: false, message: "No members to add — provide sourceGroup or members array" });
+    await bot.startAddJob(targetGroup, toAdd);
+    res.json({ ok: true, message: `Add job started for ${toAdd.length} members` });
+  } catch (e: any) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+
+// Add contacts from a saved contact list to a target group
+router.post("/scrape/add-from-list", async (req, res) => {
+  const bot = getBotInstance();
+  const { listId, targetGroup } = req.body;
+  if (!listId || !targetGroup) return res.status(400).json({ ok: false, message: "listId and targetGroup required" });
+  const list = readSubdirItem<any>("contact-lists", listId, null);
+  if (!list) return res.status(404).json({ ok: false, message: "Contact list not found" });
+  const contacts: any[] = list.contacts || [];
+  if (!contacts.length) return res.status(400).json({ ok: false, message: "Contact list is empty" });
+  const members = contacts.map((c: any) => ({
+    username: c.username || (c.phone?.startsWith("@") ? c.phone.replace(/^@/, "") : null),
+    phone: c.phone && !c.phone.startsWith("@") ? c.phone : null,
+    name: c.name || c.phone || "",
+    id: c.id || "",
+  }));
+  try {
+    await bot.startAddJob(targetGroup, members);
+    res.json({ ok: true, message: `Add job started for ${members.length} contacts from "${list.name}"` });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });
   }

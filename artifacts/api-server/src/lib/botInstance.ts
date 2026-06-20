@@ -85,6 +85,7 @@ class TelegramBotEngine {
   private rateLimitMap = new Map<string, any>();
   private pending: { phoneCode: ((v: string) => void) | null; password: ((v: string) => void) | null } = { phoneCode: null, password: null };
   private campaign: any = { active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, noTelegram: 0, skipped: 0, startTime: null, timer: null, onUpdate: null, delayMs: 2400, log: [], batchCount: 0, floodWait: 0, options: {} };
+  private addJob: any = { active: false, total: 0, added: 0, failed: 0, privacy: 0, index: 0, members: [], targetEntity: null, timer: null, log: [], floodWait: 0, startTime: null };
   private blacklist = new Set<string>();
 
   constructor() {
@@ -241,6 +242,165 @@ class TelegramBotEngine {
     return members;
   }
 
+  // ── Add-Members engine ──────────────────────────────────────────────────────
+
+  async startAddJob(targetGroup: string, members: Array<{ username: string | null; phone: string | null; name: string; id: string }>) {
+    if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram — log in first");
+    if (this.addJob.active) throw new Error("An add job is already running — stop it first");
+    if (!members.length) throw new Error("No members provided");
+
+    let normalized = targetGroup.trim()
+      .replace(/^https?:\/\//i, "").replace(/^t\.me\//i, "").replace(/^@/, "").replace(/\/+$/, "");
+    if (/^(joinchat\/|\+)/i.test(normalized)) {
+      throw new Error("Private invite links not supported. Use the group's public @username.");
+    }
+
+    let targetEntity: any;
+    try {
+      targetEntity = await this.tgClient.getEntity(normalized);
+    } catch (e: any) {
+      throw new Error(`Could not find target group/channel: ${e?.errorMessage || e?.message || "unknown"}`);
+    }
+
+    this.addJob = {
+      active: true, total: members.length, added: 0, failed: 0, privacy: 0, index: 0,
+      members, targetEntity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
+    };
+    this._addNext();
+  }
+
+  private _addNext() {
+    if (!this.addJob.active) return;
+    const { members, index, targetEntity } = this.addJob;
+
+    if (index >= members.length) {
+      this.addJob.active = false;
+      this.addJob.log.push({ status: "done", msg: `✅ Finished. Added: ${this.addJob.added}, Privacy restricted: ${this.addJob.privacy}, Failed: ${this.addJob.failed}`, at: Date.now() });
+      return;
+    }
+
+    const member = members[index];
+    this.addJob.index++;
+
+    (async () => {
+      const logEntry: any = { name: member.name, username: member.username, id: member.id, status: "pending", at: Date.now() };
+      this.addJob.log.push(logEntry);
+      if (this.addJob.log.length > 300) this.addJob.log = this.addJob.log.slice(-300);
+
+      try {
+        const { Api } = await import("telegram");
+
+        // Resolve identifier: prefer username, fall back to numeric ID
+        const identifier: any = member.username ? member.username : (member.id ? BigInt(member.id) : null);
+        if (!identifier) {
+          logEntry.status = "skipped";
+          logEntry.error = "No username or ID";
+          logEntry.at = Date.now();
+          this.addJob.failed++;
+          this.addJob.timer = setTimeout(() => this._addNext(), 500);
+          return;
+        }
+
+        let userEntity: any;
+        try {
+          userEntity = await this.tgClient!.getEntity(identifier);
+        } catch {
+          logEntry.status = "failed";
+          logEntry.error = "Could not resolve user entity";
+          logEntry.at = Date.now();
+          this.addJob.failed++;
+          this.addJob.timer = setTimeout(() => this._addNext(), 1000);
+          return;
+        }
+
+        const isChannel = targetEntity.className === "Channel";
+        if (isChannel) {
+          await this.tgClient!.invoke(new Api.channels.InviteToChannel({
+            channel: targetEntity,
+            users: [userEntity],
+          }));
+        } else {
+          await this.tgClient!.invoke(new Api.messages.AddChatUser({
+            chatId: targetEntity.id,
+            userId: userEntity,
+            fwdLimit: 50,
+          }));
+        }
+
+        logEntry.status = "added";
+        logEntry.at = Date.now();
+        this.addJob.added++;
+      } catch (e: any) {
+        const msg = e?.errorMessage || e?.message || "";
+        if (msg.includes("FLOOD_WAIT") || e?.seconds) {
+          const waitSec = e.seconds || 60;
+          console.log(`[AddJob] Flood wait ${waitSec}s`);
+          this.addJob.floodWait = waitSec;
+          this.addJob.index--;
+          logEntry.status = "flood_wait";
+          logEntry.error = `Flood wait ${waitSec}s`;
+          logEntry.at = Date.now();
+          this.addJob.log.pop();
+          this.addJob.timer = setTimeout(() => {
+            this.addJob.floodWait = 0;
+            this._addNext();
+          }, waitSec * 1000 + 2000);
+          return;
+        }
+        if (msg.includes("USER_PRIVACY_RESTRICTED") || msg.includes("PRIVACY_RESTRICTED")) {
+          logEntry.status = "privacy";
+          logEntry.error = "Privacy restricted";
+          this.addJob.privacy++;
+        } else if (msg.includes("USER_ALREADY_PARTICIPANT") || msg.includes("ALREADY_PARTICIPANT")) {
+          logEntry.status = "already";
+          logEntry.error = "Already a member";
+          this.addJob.added++;
+        } else if (msg.includes("PEER_FLOOD")) {
+          logEntry.status = "failed";
+          logEntry.error = "PEER_FLOOD — account limited";
+          this.addJob.failed++;
+        } else if (msg.includes("USER_BOT")) {
+          logEntry.status = "skipped";
+          logEntry.error = "User is a bot";
+          this.addJob.failed++;
+        } else {
+          logEntry.status = "failed";
+          logEntry.error = msg.slice(0, 80);
+          this.addJob.failed++;
+        }
+        logEntry.at = Date.now();
+      }
+
+      // Delay 2–5 seconds between adds to stay under radar
+      const delay = Math.floor(Math.random() * 3000) + 2000;
+      this.addJob.timer = setTimeout(() => this._addNext(), delay);
+    })();
+  }
+
+  getAddStatus() {
+    const j = this.addJob;
+    if (!j.active && !j.log?.length) return { active: false };
+    return {
+      active: j.active,
+      total: j.total,
+      added: j.added,
+      failed: j.failed,
+      privacy: j.privacy,
+      index: j.index,
+      percent: j.total > 0 ? Math.round(j.index / j.total * 100) : 0,
+      floodWait: j.floodWait || 0,
+      elapsed: j.startTime ? Math.round((Date.now() - j.startTime) / 1000) : 0,
+      log: (j.log || []).slice(-100),
+    };
+  }
+
+  stopAddJob() {
+    if (!this.addJob.active) return;
+    clearTimeout(this.addJob.timer);
+    this.addJob.active = false;
+    this.addJob.log.push({ status: "stopped", msg: `⏹ Stopped. Added: ${this.addJob.added}`, at: Date.now() });
+  }
+
   getStatus() {
     const cs = this.getCampaignStatus();
     return {
@@ -314,14 +474,16 @@ class TelegramBotEngine {
     if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram");
     if (this.campaign.active) throw new Error("A campaign is already running");
     if (!contacts.length) throw new Error("No contacts");
+    const noCooldown = !!options.noCooldown;
     const opts = {
-      minDelay: options.minDelay ?? 3,
-      maxDelay: options.maxDelay ?? 8,
-      batchSize: options.batchSize ?? 20,
-      batchPauseMin: options.batchPauseMin ?? 5,
-      typingDelay: options.typingDelay ?? false,
+      minDelay: noCooldown ? 0 : (options.minDelay ?? 3),
+      maxDelay: noCooldown ? 0 : (options.maxDelay ?? 8),
+      batchSize: noCooldown ? 0 : (options.batchSize ?? 20),
+      batchPauseMin: noCooldown ? 0 : (options.batchPauseMin ?? 5),
+      typingDelay: noCooldown ? false : (options.typingDelay ?? false),
       autoVariation: options.autoVariation ?? true,
-      dailyLimit: options.dailyLimit ?? 0,
+      dailyLimit: noCooldown ? 0 : (options.dailyLimit ?? 0),
+      noCooldown,
     };
     const bl: string[] = readJSON("blacklist.json", []);
     this.blacklist = new Set(bl.map((p: string) => p.replace(/\s/g, "")));
@@ -367,9 +529,9 @@ class TelegramBotEngine {
     if (options.autoVariation) personalised = addVariation(personalised);
 
     (async () => {
-      const minMs = (options.minDelay || 3) * 1000;
-      const maxMs = (options.maxDelay || 8) * 1000;
-      const randomDelay = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+      const minMs = (options.minDelay || 0) * 1000;
+      const maxMs = Math.max((options.maxDelay || 0) * 1000, minMs);
+      const randomDelay = maxMs > minMs ? Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs : minMs;
       const logEntry: any = { phone, name, status: "pending", at: Date.now() };
       this.campaign.log.push(logEntry);
       if (this.campaign.log.length > 500) this.campaign.log = this.campaign.log.slice(-500);
@@ -443,9 +605,13 @@ class TelegramBotEngine {
       this.campaign.batchCount++;
       if (options.batchSize > 0 && this.campaign.batchCount >= options.batchSize) {
         this.campaign.batchCount = 0;
-        const pauseMs = (options.batchPauseMin || 5) * 60 * 1000;
-        console.log(`[Campaign] Batch pause ${options.batchPauseMin}min`);
-        this.campaign.timer = setTimeout(() => this._campaignNext(), pauseMs);
+        const pauseMs = (options.batchPauseMin || 0) * 60 * 1000;
+        if (pauseMs > 0) {
+          console.log(`[Campaign] Batch pause ${options.batchPauseMin}min`);
+          this.campaign.timer = setTimeout(() => this._campaignNext(), pauseMs);
+        } else {
+          this.campaign.timer = setTimeout(() => this._campaignNext(), randomDelay);
+        }
       } else {
         this.campaign.timer = setTimeout(() => this._campaignNext(), randomDelay);
       }

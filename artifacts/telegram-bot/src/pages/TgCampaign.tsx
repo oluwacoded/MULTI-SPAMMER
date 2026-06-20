@@ -17,7 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Upload, Play, Square, Users, MessageSquare, Info, Wand2, Globe, ClipboardList,
   ChevronDown, ChevronUp, Shield, CheckCircle2, XCircle, Clock, AlertTriangle,
-  Loader2, BookUser, Save, FileText, SkipForward, Search
+  Loader2, BookUser, Save, FileText, SkipForward, Search, Zap
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiPost } from "@/lib/api";
@@ -70,6 +70,8 @@ export default function TgCampaign() {
   const [saveTemplateDialog, setSaveTemplateDialog] = useState(false);
   const [saveTemplateName, setSaveTemplateName] = useState("");
   const [loadListDialog, setLoadListDialog] = useState(false);
+
+  const [massBroadcast, setMassBroadcast] = useState(false);
 
   const [antiBan, setAntiBan] = useState({
     minDelay: 3, maxDelay: 8, batchSize: 20, batchPauseMin: 5,
@@ -194,7 +196,10 @@ export default function TgCampaign() {
   const handleStart = () => {
     if (!contacts.length) { toast({ title: "No contacts", variant: "destructive" }); return; }
     if (!message.trim()) { toast({ title: "No message", variant: "destructive" }); return; }
-    startCampaign.mutate({ data: { contacts, message, ...antiBan } }, {
+    const payload = massBroadcast
+      ? { contacts, message, minDelay: 0, maxDelay: 0, batchSize: 0, batchPauseMin: 0, typingDelay: false, autoVariation: antiBan.autoVariation, dailyLimit: 0, noCooldown: true }
+      : { contacts, message, ...antiBan };
+    startCampaign.mutate({ data: payload }, {
       onSuccess: (res) => {
         if (res.ok) {
           setShowLog(true);
@@ -473,6 +478,30 @@ export default function TgCampaign() {
                 Use <code className="bg-muted px-1 rounded">{"{name}"}</code> and <code className="bg-muted px-1 rounded">{"{phone}"}</code> for personalisation.
               </p>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Mass Broadcast toggle */}
+        <Card className={massBroadcast ? "border-red-500/40 bg-red-500/5" : ""}>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Zap className={cn("w-4 h-4", massBroadcast ? "text-red-500" : "text-muted-foreground")} />
+                <div>
+                  <p className="text-sm font-medium">⚡ Mass Broadcast</p>
+                  <p className="text-xs text-muted-foreground">Send with no cooldown or delay — fastest speed</p>
+                </div>
+              </div>
+              <Switch checked={massBroadcast} onCheckedChange={setMassBroadcast} />
+            </div>
+            {massBroadcast && (
+              <div className="mt-3 flex items-start gap-2 p-2 rounded-md bg-red-500/10 border border-red-500/20">
+                <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
+                <p className="text-xs text-red-400">
+                  <strong>High risk:</strong> No delays applied. Telegram may flood-wait or ban your account. Use on a secondary account only.
+                </p>
+              </div>
+            )}
           </CardContent>
         </Card>
 

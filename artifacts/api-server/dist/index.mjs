@@ -78100,6 +78100,7 @@ var TelegramBotEngine = class {
   rateLimitMap = /* @__PURE__ */ new Map();
   pending = { phoneCode: null, password: null };
   campaign = { active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, noTelegram: 0, skipped: 0, startTime: null, timer: null, onUpdate: null, delayMs: 2400, log: [], batchCount: 0, floodWait: 0, options: {} };
+  addJob = { active: false, total: 0, added: 0, failed: 0, privacy: 0, index: 0, members: [], targetEntity: null, timer: null, log: [], floodWait: 0, startTime: null };
   blacklist = /* @__PURE__ */ new Set();
   constructor() {
     this.settings = { ...SETTINGS_DEFAULTS, ...readJSON("settings.json", {}) };
@@ -78248,6 +78249,155 @@ var TelegramBotEngine = class {
     }));
     return members;
   }
+  // ── Add-Members engine ──────────────────────────────────────────────────────
+  async startAddJob(targetGroup, members) {
+    if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram \u2014 log in first");
+    if (this.addJob.active) throw new Error("An add job is already running \u2014 stop it first");
+    if (!members.length) throw new Error("No members provided");
+    let normalized = targetGroup.trim().replace(/^https?:\/\//i, "").replace(/^t\.me\//i, "").replace(/^@/, "").replace(/\/+$/, "");
+    if (/^(joinchat\/|\+)/i.test(normalized)) {
+      throw new Error("Private invite links not supported. Use the group's public @username.");
+    }
+    let targetEntity;
+    try {
+      targetEntity = await this.tgClient.getEntity(normalized);
+    } catch (e) {
+      throw new Error(`Could not find target group/channel: ${e?.errorMessage || e?.message || "unknown"}`);
+    }
+    this.addJob = {
+      active: true,
+      total: members.length,
+      added: 0,
+      failed: 0,
+      privacy: 0,
+      index: 0,
+      members,
+      targetEntity,
+      timer: null,
+      log: [],
+      floodWait: 0,
+      startTime: Date.now()
+    };
+    this._addNext();
+  }
+  _addNext() {
+    if (!this.addJob.active) return;
+    const { members, index: index2, targetEntity } = this.addJob;
+    if (index2 >= members.length) {
+      this.addJob.active = false;
+      this.addJob.log.push({ status: "done", msg: `\u2705 Finished. Added: ${this.addJob.added}, Privacy restricted: ${this.addJob.privacy}, Failed: ${this.addJob.failed}`, at: Date.now() });
+      return;
+    }
+    const member = members[index2];
+    this.addJob.index++;
+    (async () => {
+      const logEntry = { name: member.name, username: member.username, id: member.id, status: "pending", at: Date.now() };
+      this.addJob.log.push(logEntry);
+      if (this.addJob.log.length > 300) this.addJob.log = this.addJob.log.slice(-300);
+      try {
+        const { Api } = await Promise.resolve().then(() => __toESM(require_telegram(), 1));
+        const identifier = member.username ? member.username : member.id ? BigInt(member.id) : null;
+        if (!identifier) {
+          logEntry.status = "skipped";
+          logEntry.error = "No username or ID";
+          logEntry.at = Date.now();
+          this.addJob.failed++;
+          this.addJob.timer = setTimeout(() => this._addNext(), 500);
+          return;
+        }
+        let userEntity;
+        try {
+          userEntity = await this.tgClient.getEntity(identifier);
+        } catch {
+          logEntry.status = "failed";
+          logEntry.error = "Could not resolve user entity";
+          logEntry.at = Date.now();
+          this.addJob.failed++;
+          this.addJob.timer = setTimeout(() => this._addNext(), 1e3);
+          return;
+        }
+        const isChannel = targetEntity.className === "Channel";
+        if (isChannel) {
+          await this.tgClient.invoke(new Api.channels.InviteToChannel({
+            channel: targetEntity,
+            users: [userEntity]
+          }));
+        } else {
+          await this.tgClient.invoke(new Api.messages.AddChatUser({
+            chatId: targetEntity.id,
+            userId: userEntity,
+            fwdLimit: 50
+          }));
+        }
+        logEntry.status = "added";
+        logEntry.at = Date.now();
+        this.addJob.added++;
+      } catch (e) {
+        const msg = e?.errorMessage || e?.message || "";
+        if (msg.includes("FLOOD_WAIT") || e?.seconds) {
+          const waitSec = e.seconds || 60;
+          console.log(`[AddJob] Flood wait ${waitSec}s`);
+          this.addJob.floodWait = waitSec;
+          this.addJob.index--;
+          logEntry.status = "flood_wait";
+          logEntry.error = `Flood wait ${waitSec}s`;
+          logEntry.at = Date.now();
+          this.addJob.log.pop();
+          this.addJob.timer = setTimeout(() => {
+            this.addJob.floodWait = 0;
+            this._addNext();
+          }, waitSec * 1e3 + 2e3);
+          return;
+        }
+        if (msg.includes("USER_PRIVACY_RESTRICTED") || msg.includes("PRIVACY_RESTRICTED")) {
+          logEntry.status = "privacy";
+          logEntry.error = "Privacy restricted";
+          this.addJob.privacy++;
+        } else if (msg.includes("USER_ALREADY_PARTICIPANT") || msg.includes("ALREADY_PARTICIPANT")) {
+          logEntry.status = "already";
+          logEntry.error = "Already a member";
+          this.addJob.added++;
+        } else if (msg.includes("PEER_FLOOD")) {
+          logEntry.status = "failed";
+          logEntry.error = "PEER_FLOOD \u2014 account limited";
+          this.addJob.failed++;
+        } else if (msg.includes("USER_BOT")) {
+          logEntry.status = "skipped";
+          logEntry.error = "User is a bot";
+          this.addJob.failed++;
+        } else {
+          logEntry.status = "failed";
+          logEntry.error = msg.slice(0, 80);
+          this.addJob.failed++;
+        }
+        logEntry.at = Date.now();
+      }
+      const delay = Math.floor(Math.random() * 3e3) + 2e3;
+      this.addJob.timer = setTimeout(() => this._addNext(), delay);
+    })();
+  }
+  getAddStatus() {
+    const j = this.addJob;
+    if (!j.active && !j.log?.length) return { active: false };
+    return {
+      active: j.active,
+      total: j.total,
+      added: j.added,
+      failed: j.failed,
+      privacy: j.privacy,
+      index: j.index,
+      percent: j.total > 0 ? Math.round(j.index / j.total * 100) : 0,
+      floodWait: j.floodWait || 0,
+      elapsed: j.startTime ? Math.round((Date.now() - j.startTime) / 1e3) : 0,
+      log: (j.log || []).slice(-100)
+    };
+  }
+  stopAddJob() {
+    if (!this.addJob.active) return;
+    clearTimeout(this.addJob.timer);
+    this.addJob.active = false;
+    this.addJob.log.push({ status: "stopped", msg: `\u23F9 Stopped. Added: ${this.addJob.added}`, at: Date.now() });
+  }
   getStatus() {
     const cs = this.getCampaignStatus();
     return {
@@ -78318,14 +78468,16 @@ var TelegramBotEngine = class {
     if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram");
     if (this.campaign.active) throw new Error("A campaign is already running");
     if (!contacts.length) throw new Error("No contacts");
+    const noCooldown = !!options.noCooldown;
     const opts = {
-      minDelay: options.minDelay ?? 3,
-      maxDelay: options.maxDelay ?? 8,
-      batchSize: options.batchSize ?? 20,
-      batchPauseMin: options.batchPauseMin ?? 5,
-      typingDelay: options.typingDelay ?? false,
+      minDelay: noCooldown ? 0 : options.minDelay ?? 3,
+      maxDelay: noCooldown ? 0 : options.maxDelay ?? 8,
+      batchSize: noCooldown ? 0 : options.batchSize ?? 20,
+      batchPauseMin: noCooldown ? 0 : options.batchPauseMin ?? 5,
+      typingDelay: noCooldown ? false : options.typingDelay ?? false,
       autoVariation: options.autoVariation ?? true,
-      dailyLimit: options.dailyLimit ?? 0
+      dailyLimit: noCooldown ? 0 : options.dailyLimit ?? 0,
+      noCooldown
     };
     const bl = readJSON("blacklist.json", []);
     this.blacklist = new Set(bl.map((p) => p.replace(/\s/g, "")));
@@ -78377,9 +78529,9 @@ var TelegramBotEngine = class {
     let personalised = message.replace(/\{name\}/gi, name || "").replace(/\{phone\}/gi, phone);
     if (options.autoVariation) personalised = addVariation(personalised);
     (async () => {
-      const minMs = (options.minDelay || 3) * 1e3;
-      const maxMs = (options.maxDelay || 8) * 1e3;
-      const randomDelay = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+      const minMs = (options.minDelay || 0) * 1e3;
+      const maxMs = Math.max((options.maxDelay || 0) * 1e3, minMs);
+      const randomDelay = maxMs > minMs ? Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs : minMs;
       const logEntry = { phone, name, status: "pending", at: Date.now() };
       this.campaign.log.push(logEntry);
       if (this.campaign.log.length > 500) this.campaign.log = this.campaign.log.slice(-500);
@@ -78451,9 +78603,13 @@ var TelegramBotEngine = class {
       this.campaign.batchCount++;
       if (options.batchSize > 0 && this.campaign.batchCount >= options.batchSize) {
         this.campaign.batchCount = 0;
-        const pauseMs = (options.batchPauseMin || 5) * 60 * 1e3;
-        console.log(`[Campaign] Batch pause ${options.batchPauseMin}min`);
-        this.campaign.timer = setTimeout(() => this._campaignNext(), pauseMs);
+        const pauseMs = (options.batchPauseMin || 0) * 60 * 1e3;
+        if (pauseMs > 0) {
+          console.log(`[Campaign] Batch pause ${options.batchPauseMin}min`);
+          this.campaign.timer = setTimeout(() => this._campaignNext(), pauseMs);
+        } else {
+          this.campaign.timer = setTimeout(() => this._campaignNext(), randomDelay);
+        }
       } else {
         this.campaign.timer = setTimeout(() => this._campaignNext(), randomDelay);
       }
@@ -79248,6 +79404,53 @@ function getBotInstance() {
   return botInstance;
 }
 
+// src/lib/dataStore.ts
+import fs2 from "fs";
+import path2 from "path";
+var DATA_DIR2 = process.env.DATA_DIR || path2.join(process.cwd(), "data");
+function ensureDir(dir) {
+  if (!fs2.existsSync(dir)) fs2.mkdirSync(dir, { recursive: true });
+}
+function readJson(filename, fallback) {
+  ensureDir(DATA_DIR2);
+  const fp = path2.join(DATA_DIR2, filename);
+  if (!fs2.existsSync(fp)) return fallback;
+  try {
+    return JSON.parse(fs2.readFileSync(fp, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+function writeJson(filename, data) {
+  ensureDir(DATA_DIR2);
+  fs2.writeFileSync(path2.join(DATA_DIR2, filename), JSON.stringify(data, null, 2));
+}
+function listSubdir(subdir) {
+  const dir = path2.join(DATA_DIR2, subdir);
+  ensureDir(dir);
+  return fs2.readdirSync(dir).filter((f) => f.endsWith(".json")).sort().reverse();
+}
+function readSubdirItem(subdir, id, fallback) {
+  const fp = path2.join(DATA_DIR2, subdir, `${id}.json`);
+  if (!fs2.existsSync(fp)) return fallback;
+  try {
+    return JSON.parse(fs2.readFileSync(fp, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+function writeSubdirItem(subdir, id, data) {
+  const dir = path2.join(DATA_DIR2, subdir);
+  ensureDir(dir);
+  fs2.writeFileSync(path2.join(dir, `${id}.json`), JSON.stringify(data, null, 2));
+}
+function deleteSubdirItem(subdir, id) {
+  const fp = path2.join(DATA_DIR2, subdir, `${id}.json`);
+  if (!fs2.existsSync(fp)) return false;
+  fs2.unlinkSync(fp);
+  return true;
+}
+
 // src/routes/bot.ts
 var router2 = (0, import_express2.Router)();
 router2.get("/bot/status", (req, res) => {
@@ -79298,7 +79501,7 @@ router2.get("/campaign/status", (req, res) => {
 });
 router2.post("/campaign/start", async (req, res) => {
   const bot = getBotInstance();
-  const { contacts, message, minDelay, maxDelay, batchSize, batchPauseMin, typingDelay, autoVariation, dailyLimit } = req.body;
+  const { contacts, message, minDelay, maxDelay, batchSize, batchPauseMin, typingDelay, autoVariation, dailyLimit, noCooldown } = req.body;
   if (!contacts?.length || !message) {
     return res.status(400).json({ ok: false, message: "contacts and message required" });
   }
@@ -79310,7 +79513,8 @@ router2.post("/campaign/start", async (req, res) => {
       batchPauseMin,
       typingDelay,
       autoVariation,
-      dailyLimit
+      dailyLimit,
+      noCooldown
     });
     res.json({ ok: true, message: "Campaign started" });
   } catch (e) {
@@ -79368,6 +79572,52 @@ router2.post("/scrape/group", async (req, res) => {
   try {
     const members = await bot.scrapeGroup(link, Math.min(parseInt(limit) || 5e3, 1e4));
     res.json({ ok: true, count: members.length, members });
+  } catch (e) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+router2.get("/scrape/add-status", (req, res) => {
+  const bot = getBotInstance();
+  res.json(bot.getAddStatus());
+});
+router2.post("/scrape/add-stop", (req, res) => {
+  const bot = getBotInstance();
+  bot.stopAddJob();
+  res.json({ ok: true, message: "Add job stopped" });
+});
+router2.post("/scrape/add-members", async (req, res) => {
+  const bot = getBotInstance();
+  const { sourceGroup, targetGroup, limit, members } = req.body;
+  if (!targetGroup) return res.status(400).json({ ok: false, message: "targetGroup required" });
+  try {
+    let toAdd = members;
+    if (!toAdd?.length && sourceGroup) {
+      toAdd = await bot.scrapeGroup(sourceGroup, Math.min(parseInt(limit) || 5e3, 1e4));
+    }
+    if (!toAdd?.length) return res.status(400).json({ ok: false, message: "No members to add \u2014 provide sourceGroup or members array" });
+    await bot.startAddJob(targetGroup, toAdd);
+    res.json({ ok: true, message: `Add job started for ${toAdd.length} members` });
+  } catch (e) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+router2.post("/scrape/add-from-list", async (req, res) => {
+  const bot = getBotInstance();
+  const { listId, targetGroup } = req.body;
+  if (!listId || !targetGroup) return res.status(400).json({ ok: false, message: "listId and targetGroup required" });
+  const list = readSubdirItem("contact-lists", listId, null);
+  if (!list) return res.status(404).json({ ok: false, message: "Contact list not found" });
+  const contacts = list.contacts || [];
+  if (!contacts.length) return res.status(400).json({ ok: false, message: "Contact list is empty" });
+  const members = contacts.map((c) => ({
+    username: c.username || (c.phone?.startsWith("@") ? c.phone.replace(/^@/, "") : null),
+    phone: c.phone && !c.phone.startsWith("@") ? c.phone : null,
+    name: c.name || c.phone || "",
+    id: c.id || ""
+  }));
+  try {
+    await bot.startAddJob(targetGroup, members);
+    res.json({ ok: true, message: `Add job started for ${members.length} contacts from "${list.name}"` });
   } catch (e) {
     res.json({ ok: false, message: e.message });
   }
@@ -79455,8 +79705,8 @@ var bot_default = router2;
 var import_express3 = __toESM(require_express2(), 1);
 
 // src/lib/smsEngine.ts
-import fs2 from "fs";
-import path2 from "path";
+import fs3 from "fs";
+import path3 from "path";
 
 // ../../node_modules/.pnpm/uuid@14.0.0/node_modules/uuid/dist-node/stringify.js
 var byteToHex = [];
@@ -79503,19 +79753,19 @@ function _v4(options, buf, offset) {
 var v4_default = v4;
 
 // src/lib/smsEngine.ts
-var DATA_DIR2 = process.env.DATA_DIR || path2.join(process.cwd(), "data");
-if (!fs2.existsSync(DATA_DIR2)) fs2.mkdirSync(DATA_DIR2, { recursive: true });
+var DATA_DIR3 = process.env.DATA_DIR || path3.join(process.cwd(), "data");
+if (!fs3.existsSync(DATA_DIR3)) fs3.mkdirSync(DATA_DIR3, { recursive: true });
 function readJSON2(file2, def) {
   try {
-    const p = path2.join(DATA_DIR2, file2);
-    if (fs2.existsSync(p)) return JSON.parse(fs2.readFileSync(p, "utf8"));
+    const p = path3.join(DATA_DIR3, file2);
+    if (fs3.existsSync(p)) return JSON.parse(fs3.readFileSync(p, "utf8"));
   } catch {
   }
   return def;
 }
 function writeJSON2(file2, data) {
   try {
-    fs2.writeFileSync(path2.join(DATA_DIR2, file2), JSON.stringify(data, null, 2));
+    fs3.writeFileSync(path3.join(DATA_DIR3, file2), JSON.stringify(data, null, 2));
   } catch {
   }
 }
@@ -79772,55 +80022,6 @@ var sms_default = router3;
 // src/routes/data.ts
 var import_express4 = __toESM(require_express2(), 1);
 import { randomUUID } from "crypto";
-
-// src/lib/dataStore.ts
-import fs3 from "fs";
-import path3 from "path";
-var DATA_DIR3 = process.env.DATA_DIR || path3.join(process.cwd(), "data");
-function ensureDir(dir) {
-  if (!fs3.existsSync(dir)) fs3.mkdirSync(dir, { recursive: true });
-}
-function readJson(filename, fallback) {
-  ensureDir(DATA_DIR3);
-  const fp = path3.join(DATA_DIR3, filename);
-  if (!fs3.existsSync(fp)) return fallback;
-  try {
-    return JSON.parse(fs3.readFileSync(fp, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-function writeJson(filename, data) {
-  ensureDir(DATA_DIR3);
-  fs3.writeFileSync(path3.join(DATA_DIR3, filename), JSON.stringify(data, null, 2));
-}
-function listSubdir(subdir) {
-  const dir = path3.join(DATA_DIR3, subdir);
-  ensureDir(dir);
-  return fs3.readdirSync(dir).filter((f) => f.endsWith(".json")).sort().reverse();
-}
-function readSubdirItem(subdir, id, fallback) {
-  const fp = path3.join(DATA_DIR3, subdir, `${id}.json`);
-  if (!fs3.existsSync(fp)) return fallback;
-  try {
-    return JSON.parse(fs3.readFileSync(fp, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-function writeSubdirItem(subdir, id, data) {
-  const dir = path3.join(DATA_DIR3, subdir);
-  ensureDir(dir);
-  fs3.writeFileSync(path3.join(dir, `${id}.json`), JSON.stringify(data, null, 2));
-}
-function deleteSubdirItem(subdir, id) {
-  const fp = path3.join(DATA_DIR3, subdir, `${id}.json`);
-  if (!fs3.existsSync(fp)) return false;
-  fs3.unlinkSync(fp);
-  return true;
-}
-
-// src/routes/data.ts
 var router4 = (0, import_express4.Router)();
 router4.get("/contact-lists", (_req, res) => {
   const files = listSubdir("contact-lists");

@@ -7,10 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiPost, apiGet } from "@/lib/api";
-import { Users, Download, Search, Loader2, Info, Save, AlertTriangle, Phone, AtSign } from "lucide-react";
+import { Users, Download, Search, Loader2, Info, Save, AlertTriangle, Phone, AtSign, UserPlus, Zap, Square, CheckCircle2, XCircle, ShieldX, BookUser } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface Member { username: string | null; phone: string | null; name: string; id: string; }
 
@@ -26,9 +29,23 @@ export default function TgScraper() {
   const [saveDialog, setSaveDialog] = useState(false);
   const [listName, setListName] = useState("");
 
+  // Add-to-group state
+  const [targetGroup, setTargetGroup] = useState("");
+  const [addListId, setAddListId] = useState("");
+  const [addListTarget, setAddListTarget] = useState("");
+
   const { data: listsData } = useQuery({
     queryKey: ["contact-lists"],
     queryFn: () => apiGet("/contact-lists"),
+  });
+
+  const { data: addStatus, refetch: refetchAdd } = useQuery({
+    queryKey: ["add-status"],
+    queryFn: () => apiGet("/scrape/add-status"),
+    refetchInterval: (query) => {
+      const data = query.state.data as any;
+      return data?.active ? 1500 : false;
+    },
   });
 
   const scrape = useMutation({
@@ -54,11 +71,46 @@ export default function TgScraper() {
     },
   });
 
+  const startAdd = useMutation({
+    mutationFn: (data: { targetGroup: string; members: Member[] }) =>
+      apiPost("/scrape/add-members", data),
+    onSuccess: (res: any) => {
+      if (res.ok) {
+        refetchAdd();
+        toast({ title: "Add job started", description: res.message });
+      } else {
+        toast({ title: "Failed to start", description: res.message, variant: "destructive" });
+      }
+    },
+    onError: (e: any) => toast({ title: "Request failed", description: e?.message, variant: "destructive" }),
+  });
+
+  const stopAdd = useMutation({
+    mutationFn: () => apiPost("/scrape/add-stop", {}),
+    onSuccess: () => {
+      refetchAdd();
+      toast({ title: "Add job stopped" });
+    },
+  });
+
+  const startAddFromList = useMutation({
+    mutationFn: (data: { listId: string; targetGroup: string }) =>
+      apiPost("/scrape/add-from-list", data),
+    onSuccess: (res: any) => {
+      if (res.ok) {
+        refetchAdd();
+        toast({ title: "Add job started", description: res.message });
+      } else {
+        toast({ title: "Failed to start", description: res.message, variant: "destructive" });
+      }
+    },
+    onError: (e: any) => toast({ title: "Request failed", description: e?.message, variant: "destructive" }),
+  });
+
   const withPhone = members.filter(m => m.phone);
   const withUsername = members.filter(m => m.username);
 
   const handleSave = () => {
-    // Save as contacts. Prefer phone, fall back to @username as the identifier.
     const contacts = members
       .map(m => ({
         phone: m.phone || (m.username ? `@${m.username}` : ""),
@@ -88,6 +140,7 @@ export default function TgScraper() {
   };
 
   const savedLists: any[] = listsData?.lists || [];
+  const addJobActive = (addStatus as any)?.active;
 
   return (
     <Layout>
@@ -165,7 +218,7 @@ export default function TgScraper() {
               </div>
             </CardHeader>
             <CardContent className="p-0">
-              <div className="max-h-96 overflow-y-auto divide-y divide-border">
+              <div className="max-h-72 overflow-y-auto divide-y divide-border">
                 {members.map((m, i) => (
                   <div key={i} className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/30">
                     <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center text-xs font-medium text-primary shrink-0">
@@ -182,6 +235,119 @@ export default function TgScraper() {
             </CardContent>
           </Card>
         )}
+
+        {/* Add to My Group — from scraped members */}
+        {members.length > 0 && (
+          <Card className="border-primary/20">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <UserPlus className="w-4 h-4 text-primary" /> Add Scraped Members to My Group
+              </CardTitle>
+              <CardDescription>Auto-add all {members.length} scraped members to one of your groups or channels</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {addJobActive ? (
+                <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} />
+              ) : (
+                <>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Your group/channel @username or link</Label>
+                    <Input
+                      value={targetGroup}
+                      onChange={e => setTargetGroup(e.target.value)}
+                      placeholder="@mygroup or https://t.me/mygroup"
+                      className="mt-1 font-mono text-sm"
+                    />
+                  </div>
+                  <Button
+                    className="w-full"
+                    onClick={() => startAdd.mutate({ targetGroup: targetGroup.trim(), members })}
+                    disabled={!targetGroup.trim() || startAdd.isPending || !connected}
+                  >
+                    {startAdd.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
+                    {startAdd.isPending ? "Starting…" : `Add ${members.length} Members`}
+                  </Button>
+                  <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50">
+                    <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                    <p className="text-xs text-muted-foreground">
+                      Adds one member every ~2–5 s to avoid flood limits. Users with privacy settings will be skipped automatically.
+                    </p>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Live add-job progress even after members are cleared */}
+        {!members.length && addJobActive && (
+          <Card className="border-primary/20">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <UserPlus className="w-4 h-4 text-primary" /> Add Job Running
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} />
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Standalone: Add from Saved Contact List */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <BookUser className="w-4 h-4" /> Add Members from Saved List
+            </CardTitle>
+            <CardDescription>Pick a saved contact list and add those members directly to any of your groups</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {savedLists.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No saved contact lists yet. Scrape a group and save it, or build one in the Telegram Campaign page.</p>
+            ) : (
+              <>
+                {addJobActive ? (
+                  <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} />
+                ) : (
+                  <>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Contact list</Label>
+                      <Select value={addListId} onValueChange={setAddListId}>
+                        <SelectTrigger className="mt-1 h-9 text-sm">
+                          <SelectValue placeholder="Select a saved list…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {savedLists.map((l: any) => (
+                            <SelectItem key={l.id} value={l.id}>
+                              {l.name} ({l.count} contacts)
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Target group/channel</Label>
+                      <Input
+                        value={addListTarget}
+                        onChange={e => setAddListTarget(e.target.value)}
+                        placeholder="@mygroup or https://t.me/mygroup"
+                        className="mt-1 font-mono text-sm"
+                      />
+                    </div>
+                    <Button
+                      className="w-full"
+                      onClick={() => startAddFromList.mutate({ listId: addListId, targetGroup: addListTarget.trim() })}
+                      disabled={!addListId || !addListTarget.trim() || startAddFromList.isPending || !connected}
+                    >
+                      {startAddFromList.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <UserPlus className="w-4 h-4 mr-2" />}
+                      {startAddFromList.isPending ? "Starting…" : "Start Adding"}
+                    </Button>
+                  </>
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
 
         <Dialog open={saveDialog} onOpenChange={setSaveDialog}>
           <DialogContent>
@@ -204,5 +370,70 @@ export default function TgScraper() {
         </Dialog>
       </div>
     </Layout>
+  );
+}
+
+function AddJobProgress({ status, onStop, stopping }: { status: any; onStop: () => void; stopping: boolean }) {
+  const pct = status?.percent ?? 0;
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+          <p className="text-sm font-semibold">Adding members…</p>
+          {(status?.floodWait ?? 0) > 0 && (
+            <Badge variant="outline" className="text-orange-400 border-orange-400/40 text-xs">
+              Flood wait {status.floodWait}s
+            </Badge>
+          )}
+        </div>
+        <Badge>{pct}%</Badge>
+      </div>
+      <Progress value={pct} className="h-2" />
+      <div className="grid grid-cols-4 gap-1.5 text-center text-xs">
+        <div className="rounded-md bg-green-500/10 border border-green-500/20 p-1.5">
+          <p className="font-bold text-green-400">{status?.added ?? 0}</p>
+          <p className="text-muted-foreground">Added</p>
+        </div>
+        <div className="rounded-md bg-yellow-500/10 border border-yellow-500/20 p-1.5">
+          <p className="font-bold text-yellow-400">{status?.privacy ?? 0}</p>
+          <p className="text-muted-foreground">Privacy</p>
+        </div>
+        <div className="rounded-md bg-red-500/10 border border-red-500/20 p-1.5">
+          <p className="font-bold text-red-400">{status?.failed ?? 0}</p>
+          <p className="text-muted-foreground">Failed</p>
+        </div>
+        <div className="rounded-md bg-muted/50 p-1.5">
+          <p className="font-bold text-muted-foreground">{(status?.total ?? 0) - (status?.index ?? 0)}</p>
+          <p className="text-muted-foreground">Left</p>
+        </div>
+      </div>
+      {/* Recent log */}
+      {status?.log?.length > 0 && (
+        <div className="max-h-36 overflow-y-auto divide-y divide-border rounded-md border">
+          {[...(status.log as any[])].reverse().slice(0, 20).map((entry: any, i: number) => {
+            const isAdded = entry.status === "added" || entry.status === "already";
+            const isPrivacy = entry.status === "privacy";
+            const isFail = entry.status === "failed" || entry.status === "skipped";
+            return (
+              <div key={i} className="flex items-center gap-2 px-3 py-1.5">
+                {isAdded ? <CheckCircle2 className="w-3 h-3 text-green-500 shrink-0" />
+                  : isPrivacy ? <ShieldX className="w-3 h-3 text-yellow-500 shrink-0" />
+                  : isFail ? <XCircle className="w-3 h-3 text-red-500 shrink-0" />
+                  : entry.status === "done" ? <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />
+                  : <Loader2 className="w-3 h-3 text-blue-400 animate-spin shrink-0" />}
+                <span className={cn("text-xs truncate flex-1", entry.status === "done" ? "text-primary font-medium" : "text-foreground")}>
+                  {entry.msg || entry.name || entry.username}
+                </span>
+                {entry.error && <span className="text-xs text-muted-foreground truncate max-w-[100px]">{entry.error}</span>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <Button variant="destructive" size="sm" className="w-full" onClick={onStop} disabled={stopping}>
+        <Square className="w-3.5 h-3.5 mr-1.5" /> Stop
+      </Button>
+    </div>
   );
 }
