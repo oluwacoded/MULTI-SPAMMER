@@ -709,57 +709,74 @@ class TelegramBotEngine {
       try {
         const { Api } = await import("telegram");
 
-        // Resolve user entity: try username → numeric id → phone (ImportContacts)
-        let userEntity: any = null;
+        // Force flood waits to throw (so we can show a live countdown) instead of
+        // letting GramJS silently sleep through them — which makes the job look
+        // frozen/stopped. Restored after each member so scraping keeps auto-sleeping.
+        const prevFloodThreshold = (client as any).floodSleepThreshold;
+        (client as any).floodSleepThreshold = 0;
+        try {
+          // Resolve user entity: try username → numeric id → phone (ImportContacts)
+          let userEntity: any = null;
 
-        if (member.username || member.id) {
-          const identifier: any = member.username ? member.username : BigInt(member.id!);
-          try {
-            userEntity = await client.getEntity(identifier);
-          } catch { /* fall through to phone */ }
-        }
+          if (member.username || member.id) {
+            const identifier: any = member.username ? member.username : BigInt(member.id!);
+            try {
+              userEntity = await client.getEntity(identifier);
+            } catch (ge: any) {
+              const gm = ge?.errorMessage || ge?.message || "";
+              if (gm.includes("FLOOD_WAIT") || ge?.seconds) throw ge; // surface as countdown
+              /* otherwise fall through to phone */
+            }
+          }
 
-        if (!userEntity && member.phone) {
-          // Phone fallback: import as contact temporarily to get the TG user entity
-          try {
-            const result: any = await client.invoke(new Api.contacts.ImportContacts({
-              contacts: [new (Api.InputPhoneContact as any)({
-                clientId: BigInt(Math.floor(Math.random() * 1000000000)) as any,
-                phone: member.phone.replace(/[^\d+]/g, ""),
-                firstName: member.name || member.phone,
-                lastName: "",
-              })],
+          if (!userEntity && member.phone) {
+            // Phone fallback: import as contact temporarily to get the TG user entity
+            try {
+              const result: any = await client.invoke(new Api.contacts.ImportContacts({
+                contacts: [new (Api.InputPhoneContact as any)({
+                  clientId: BigInt(Math.floor(Math.random() * 1000000000)) as any,
+                  phone: member.phone.replace(/[^\d+]/g, ""),
+                  firstName: member.name || member.phone,
+                  lastName: "",
+                })],
+              }));
+              userEntity = result.users?.[0] || null;
+            } catch (pe: any) {
+              const pm = pe?.errorMessage || pe?.message || "";
+              if (pm.includes("FLOOD_WAIT") || pe?.seconds) throw pe; // surface as countdown
+              /* otherwise ignore — phone may not be registered on TG */
+            }
+          }
+
+          if (!userEntity) {
+            logEntry.status = "skipped";
+            logEntry.error = "Cannot resolve user — no username, ID, or registered phone";
+            logEntry.at = Date.now();
+            job.failed++;
+            job.timer = setTimeout(() => this._addNext(s), job.noCooldown ? 0 : 500);
+            return;
+          }
+
+          const isChannel = targetEntity.className === "Channel";
+          if (isChannel) {
+            await client.invoke(new Api.channels.InviteToChannel({
+              channel: targetEntity,
+              users: [userEntity],
             }));
-            userEntity = result.users?.[0] || null;
-          } catch { /* ignore — phone may not be registered on TG */ }
-        }
+          } else {
+            await client.invoke(new Api.messages.AddChatUser({
+              chatId: targetEntity.id,
+              userId: userEntity,
+              fwdLimit: 50,
+            }));
+          }
 
-        if (!userEntity) {
-          logEntry.status = "skipped";
-          logEntry.error = "Cannot resolve user — no username, ID, or registered phone";
+          logEntry.status = "added";
           logEntry.at = Date.now();
-          job.failed++;
-          job.timer = setTimeout(() => this._addNext(s), job.noCooldown ? 0 : 500);
-          return;
+          job.added++;
+        } finally {
+          (client as any).floodSleepThreshold = prevFloodThreshold;
         }
-
-        const isChannel = targetEntity.className === "Channel";
-        if (isChannel) {
-          await client.invoke(new Api.channels.InviteToChannel({
-            channel: targetEntity,
-            users: [userEntity],
-          }));
-        } else {
-          await client.invoke(new Api.messages.AddChatUser({
-            chatId: targetEntity.id,
-            userId: userEntity,
-            fwdLimit: 50,
-          }));
-        }
-
-        logEntry.status = "added";
-        logEntry.at = Date.now();
-        job.added++;
       } catch (e: any) {
         const msg = e?.errorMessage || e?.message || "";
         if (msg.includes("FLOOD_WAIT") || e?.seconds) {

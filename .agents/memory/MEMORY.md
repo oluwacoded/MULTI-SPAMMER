@@ -1,1 +1,2 @@
 - [Telegram concurrent multi-account](telegram-multi-account.md) — all accounts stay connected & run own jobs; `activeAccountId` is default-view only; account-scoped endpoints use raw fetch, not the generated client.
+- [Telegram flood-wait visibility](telegram-flood-waits.md) — add job "freezes" because GramJS silently sleeps flood waits ≤60s; set floodSleepThreshold=0 in the add loop only (not globally — breaks scraping).
