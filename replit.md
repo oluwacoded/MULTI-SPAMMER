@@ -31,10 +31,14 @@ A multi-channel outreach toolkit: a React dashboard plus an Express API for runn
 - Baileys is dynamically `import()`-ed at runtime (ESM-only) and externalized in `build.mjs`.
 - The generated client in `@workspace/api-client-react` has manual edits — do NOT re-run Orval codegen.
 - Config/secrets are stored at runtime in `data/settings.json`, not env vars.
+- Telegram is **multi-account, single active connection**: accounts live in `data/tg_accounts.json` (`{accounts:[{id,label,apiId?,apiHash?,session,username,phone,name}], activeId}`). Each account can carry its own `api_id`/`api_hash`, else it falls back to the global admin keys in `tg_credentials.json`. Only one account is connected at a time (the active one). Legacy `tg_session.json` is migrated into "Account 1" on first boot. Account routes: `/api/tg-accounts` (GET/POST/PATCH/DELETE) + `/api/tg-accounts/:id/active`.
+- Login is async/stateful: `/login/start` (accepts `accountId` to re-login or `createNew` to add) kicks off GramJS; `/login/code` & `/login/2fa` just submit. The 2FA-vs-done outcome is reported via `loginState` (`idle|awaiting_code|awaiting_password|connected|error`) in `/bot/status`, which the Login page polls to drive the UI.
+- **No app-level auth (by design/user request):** anyone who can reach the dashboard can use, switch, or remove every linked Telegram account. Keep the URL private.
+- Group auto-add defaults to **turbo** (`noCooldown`): adds members back-to-back (no 2–5s countdown), keeps FLOOD_WAIT requeue, and stops the job on PEER_FLOOD.
 
 ## Product
 
-Dashboard with pages for Telegram login/campaigns, Telegram group scraping, Gmail campaigns (visual builder + raw HTML + live preview + templates + history/CSV), WhatsApp (QR connect + bulk campaign), SMS, contact lists, and settings (Telegram API credentials, multi-server management).
+Dashboard with pages for Telegram account management (link/switch/remove multiple accounts) + login, Telegram group scraping with turbo auto-add, Gmail campaigns (visual builder + raw HTML + live preview + templates + history/CSV), WhatsApp (QR connect + bulk campaign), SMS, contact lists, and settings (shared/global Telegram API credentials, multi-server management).
 
 ## User preferences
 

@@ -17,11 +17,59 @@ router.post("/bot/disconnect", async (req, res) => {
 
 router.post("/login/start", async (req, res) => {
   const bot = getBotInstance();
-  const { phone } = req.body;
+  const { phone, accountId, createNew, label, apiId, apiHash } = req.body;
   if (!phone) return res.status(400).json({ ok: false, message: "phone required" });
   try {
-    await bot.startLogin(phone);
+    await bot.startLogin(phone, { accountId, createNew, label, apiId, apiHash });
     res.json({ ok: true, message: "Code sent — check Telegram" });
+  } catch (e: any) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+
+// ── Telegram accounts (multi-account) ─────────────────────────────────────────
+router.get("/tg-accounts", (_req, res) => {
+  const bot = getBotInstance();
+  res.json(bot.getAccounts());
+});
+
+router.post("/tg-accounts", (req, res) => {
+  const bot = getBotInstance();
+  const { label, apiId, apiHash } = req.body;
+  try {
+    const acc = bot.createAccount(label || "", apiId, apiHash);
+    res.json({ ok: true, account: { id: acc.id, label: acc.label } });
+  } catch (e: any) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+
+router.patch("/tg-accounts/:id", (req, res) => {
+  const bot = getBotInstance();
+  const { label, apiId, apiHash } = req.body;
+  try {
+    bot.updateAccount(req.params.id, { label, apiId, apiHash });
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+
+router.delete("/tg-accounts/:id", async (req, res) => {
+  const bot = getBotInstance();
+  try {
+    await bot.removeAccount(req.params.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+
+router.post("/tg-accounts/:id/active", async (req, res) => {
+  const bot = getBotInstance();
+  try {
+    await bot.setActiveAccount(req.params.id);
+    res.json({ ok: true });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });
   }
@@ -153,7 +201,7 @@ router.post("/scrape/add-stop", (req, res) => {
 // Scrape source group then immediately add all members to target group
 router.post("/scrape/add-members", async (req, res) => {
   const bot = getBotInstance();
-  const { sourceGroup, targetGroup, limit, members } = req.body;
+  const { sourceGroup, targetGroup, limit, members, noCooldown } = req.body;
   if (!targetGroup) return res.status(400).json({ ok: false, message: "targetGroup required" });
   try {
     let toAdd = members;
@@ -161,7 +209,7 @@ router.post("/scrape/add-members", async (req, res) => {
       toAdd = await bot.scrapeGroup(sourceGroup, Math.min(parseInt(limit) || 5000, 10000));
     }
     if (!toAdd?.length) return res.status(400).json({ ok: false, message: "No members to add — provide sourceGroup or members array" });
-    await bot.startAddJob(targetGroup, toAdd);
+    await bot.startAddJob(targetGroup, toAdd, { noCooldown: noCooldown !== false });
     res.json({ ok: true, message: `Add job started for ${toAdd.length} members` });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });
@@ -171,7 +219,7 @@ router.post("/scrape/add-members", async (req, res) => {
 // Add contacts from a saved contact list to a target group
 router.post("/scrape/add-from-list", async (req, res) => {
   const bot = getBotInstance();
-  const { listId, targetGroup } = req.body;
+  const { listId, targetGroup, noCooldown } = req.body;
   if (!listId || !targetGroup) return res.status(400).json({ ok: false, message: "listId and targetGroup required" });
   const list = readSubdirItem<any>("contact-lists", listId, null);
   if (!list) return res.status(404).json({ ok: false, message: "Contact list not found" });
@@ -184,7 +232,7 @@ router.post("/scrape/add-from-list", async (req, res) => {
     id: c.id || "",
   }));
   try {
-    await bot.startAddJob(targetGroup, members);
+    await bot.startAddJob(targetGroup, members, { noCooldown: noCooldown !== false });
     res.json({ ok: true, message: `Add job started for ${members.length} contacts from "${list.name}"` });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });

@@ -78024,6 +78024,20 @@ function writeJSON(file2, data) {
   } catch {
   }
 }
+var ACCOUNTS_FILE = "tg_accounts.json";
+function readAccountsStore() {
+  const store = readJSON(ACCOUNTS_FILE, null);
+  if (store && Array.isArray(store.accounts)) {
+    return { accounts: store.accounts, activeId: store.activeId ?? null };
+  }
+  return { accounts: [], activeId: null };
+}
+function writeAccountsStore(store) {
+  writeJSON(ACCOUNTS_FILE, store);
+}
+function genAccountId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
 var SETTINGS_DEFAULTS = {
   aiEnabled: false,
   aiMode: "chill",
@@ -78099,6 +78113,13 @@ var TelegramBotEngine = class {
   activePersona = /* @__PURE__ */ new Map();
   rateLimitMap = /* @__PURE__ */ new Map();
   pending = { phoneCode: null, password: null };
+  activeAccountId = null;
+  pendingLoginAccountId = null;
+  loginState = "idle";
+  loginError = null;
+  initPromise = null;
+  switching = false;
+  handlerClient = null;
   campaign = { active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, noTelegram: 0, skipped: 0, startTime: null, timer: null, onUpdate: null, delayMs: 2400, log: [], batchCount: 0, floodWait: 0, options: {} };
   addJob = { active: false, total: 0, added: 0, failed: 0, privacy: 0, index: 0, members: [], targetEntity: null, timer: null, log: [], floodWait: 0, startTime: null };
   blacklist = /* @__PURE__ */ new Set();
@@ -78114,7 +78135,8 @@ var TelegramBotEngine = class {
     this.walletData = readJSON("wallets.json", {});
     this.scamAlerts = readJSON("scam_alerts.json", []);
     writeJSON("settings.json", this.settings);
-    this.init();
+    this._migrateAccounts();
+    this.initPromise = this.init();
   }
   getTgCreds() {
     const saved = readJSON("tg_credentials.json", {});
@@ -78131,67 +78153,256 @@ var TelegramBotEngine = class {
     if (!id || !apiHash) throw new Error("apiId and apiHash required");
     writeJSON("tg_credentials.json", { apiId: id, apiHash });
   }
-  async init() {
-    const { apiId, apiHash } = this.getTgCreds();
-    if (!apiId || !apiHash) {
-      console.log("[Bot] \u26A0\uFE0F  TG_API_ID and TG_API_HASH not set. Dashboard available.");
+  // ── Account store / lifecycle ───────────────────────────────────────────────
+  // On first boot, fold any legacy single-account session into one account record.
+  _migrateAccounts() {
+    const store = readAccountsStore();
+    if (store.accounts.length > 0) {
+      this.activeAccountId = store.activeId || store.accounts[0].id;
       return;
     }
-    const saved = readJSON("tg_session.json", { session: "" });
-    const session = new import_sessions.StringSession(saved.session || "");
-    this.tgClient = new import_telegram.TelegramClient(session, apiId, apiHash, { connectionRetries: 5, useWSS: true });
+    const legacy = readJSON("tg_session.json", { session: "" });
+    if (legacy?.session) {
+      const acc = {
+        id: genAccountId(),
+        label: "Account 1",
+        session: legacy.session,
+        username: null,
+        phone: null,
+        name: null
+      };
+      writeAccountsStore({ accounts: [acc], activeId: acc.id });
+      this.activeAccountId = acc.id;
+    }
+  }
+  _getAccount(id) {
+    if (!id) return null;
+    return readAccountsStore().accounts.find((a) => a.id === id) || null;
+  }
+  _saveAccount(acc) {
+    const store = readAccountsStore();
+    const idx = store.accounts.findIndex((a) => a.id === acc.id);
+    if (idx >= 0) store.accounts[idx] = acc;
+    else store.accounts.push(acc);
+    writeAccountsStore(store);
+  }
+  // Per-account creds, falling back to the global admin keys.
+  getCredsForAccount(acc) {
+    if (acc?.apiId && acc?.apiHash) return { apiId: Number(acc.apiId), apiHash: String(acc.apiHash) };
+    return this.getTgCreds();
+  }
+  getAccounts() {
+    const store = readAccountsStore();
+    return {
+      activeId: this.activeAccountId,
+      accounts: store.accounts.map((a) => ({
+        id: a.id,
+        label: a.label,
+        username: a.username || null,
+        phone: a.phone || null,
+        name: a.name || null,
+        hasOwnCreds: !!(a.apiId && a.apiHash),
+        hasSession: !!a.session,
+        active: this.activeAccountId === a.id,
+        connected: this.isConnected && this.activeAccountId === a.id
+      }))
+    };
+  }
+  createAccount(label, apiId, apiHash) {
+    const store = readAccountsStore();
+    const acc = {
+      id: genAccountId(),
+      label: (label || "").trim() || `Account ${store.accounts.length + 1}`,
+      session: "",
+      username: null,
+      phone: null,
+      name: null
+    };
+    if (apiId && apiHash) {
+      acc.apiId = parseInt(String(apiId));
+      acc.apiHash = String(apiHash);
+    }
+    store.accounts.push(acc);
+    if (!store.activeId) {
+      store.activeId = acc.id;
+      this.activeAccountId = acc.id;
+    }
+    writeAccountsStore(store);
+    return acc;
+  }
+  updateAccount(id, patch) {
+    const acc = this._getAccount(id);
+    if (!acc) throw new Error("Account not found");
+    if (patch.label !== void 0 && String(patch.label).trim()) acc.label = String(patch.label).trim();
+    if (patch.apiId && patch.apiHash) {
+      acc.apiId = parseInt(String(patch.apiId));
+      acc.apiHash = String(patch.apiHash);
+    }
+    this._saveAccount(acc);
+    return acc;
+  }
+  async removeAccount(id) {
+    await this._ready();
+    if (this.pendingLoginAccountId === id) throw new Error("Finish or cancel the login in progress first");
+    if ((this.campaign.active || this.addJob.active) && this.activeAccountId === id) {
+      throw new Error("Stop the running campaign/add job before removing the active account");
+    }
+    const store = readAccountsStore();
+    if (!store.accounts.some((a) => a.id === id)) throw new Error("Account not found");
+    const wasActive = this.activeAccountId === id;
+    store.accounts = store.accounts.filter((a) => a.id !== id);
+    if (wasActive) {
+      await this.disconnect();
+      this.activeAccountId = store.accounts[0]?.id || null;
+      store.activeId = this.activeAccountId;
+    }
+    writeAccountsStore(store);
+    if (wasActive && this.activeAccountId) {
+      const next = this._getAccount(this.activeAccountId);
+      if (next?.session) {
+        try {
+          await this.connectAccount(next);
+        } catch {
+        }
+      }
+    }
+  }
+  async setActiveAccount(id) {
+    await this._ready();
+    if (this.pendingLoginAccountId) throw new Error("Finish the login in progress before switching accounts");
+    if (this.campaign.active || this.addJob.active) throw new Error("Stop the running campaign/add job before switching accounts");
+    if (this.switching) throw new Error("Already switching accounts \u2014 try again in a moment");
+    const acc = this._getAccount(id);
+    if (!acc) throw new Error("Account not found");
+    if (this.activeAccountId === id && this.isConnected) return;
+    this.switching = true;
     try {
-      await this.tgClient.start({
-        phoneNumber: async () => process.env.OWNER_PHONE || "",
-        phoneCode: async () => {
-          console.log("[Bot] \u23F3 Waiting for phone code...");
-          return new Promise((resolve) => {
-            this.pending.phoneCode = resolve;
-          });
-        },
-        password: async () => {
-          console.log("[Bot] \u{1F510} 2FA required...");
-          return new Promise((resolve) => {
-            this.pending.password = resolve;
-          });
-        },
-        onError: (err) => console.log("[Bot] Login error:", err.message)
-      });
-      const sessionStr = this.tgClient.session.save();
-      writeJSON("tg_session.json", { session: sessionStr });
-      this.tgMe = await this.tgClient.getMe();
-      this.isConnected = true;
-      console.log(`[Bot] \u2705 Connected as @${this.tgMe.username || this.tgMe.firstName}`);
-      this.registerHandler();
+      await this.disconnect();
+      const store = readAccountsStore();
+      store.activeId = id;
+      writeAccountsStore(store);
+      this.activeAccountId = id;
+      if (acc.session) await this.connectAccount(acc);
+    } finally {
+      this.switching = false;
+    }
+  }
+  // Non-interactive connect using a saved session (never prompts for a code).
+  async connectAccount(acc) {
+    const { apiId, apiHash } = this.getCredsForAccount(acc);
+    if (!apiId || !apiHash) throw new Error("No Telegram API credentials for this account");
+    if (!acc.session) throw new Error("This account isn't logged in yet");
+    const session = new import_sessions.StringSession(acc.session);
+    const client = new import_telegram.TelegramClient(session, apiId, apiHash, { connectionRetries: 5, useWSS: true });
+    await client.connect();
+    const me = await client.getMe();
+    if (!me) throw new Error("Session invalid \u2014 please log in again");
+    this.tgClient = client;
+    this.tgMe = me;
+    this.isConnected = true;
+    acc.username = me.username || null;
+    acc.phone = me.phone || null;
+    acc.name = me.firstName || null;
+    acc.session = client.session.save();
+    this._saveAccount(acc);
+    this.registerHandler();
+  }
+  async init() {
+    const acc = this._getAccount(this.activeAccountId);
+    if (!acc) {
+      console.log("[Bot] No Telegram account linked yet. Dashboard available.");
+      return;
+    }
+    if (!acc.session) {
+      console.log(`[Bot] Account "${acc.label}" has no session yet \u2014 awaiting login.`);
+      return;
+    }
+    try {
+      await this.connectAccount(acc);
+      console.log(`[Bot] \u2705 Connected as @${this.tgMe?.username || this.tgMe?.firstName}`);
     } catch (err) {
       console.log("[Bot] \u274C Connection failed:", err.message);
       this.tgClient = null;
       this.isConnected = false;
+      this.tgMe = null;
     }
   }
-  async startLogin(phone) {
-    const { apiId, apiHash } = this.getTgCreds();
-    if (!apiId || !apiHash) throw new Error("Telegram API ID and API Hash required \u2014 save them in Settings first");
+  // Wait for the initial (constructor-triggered) connect to settle before any
+  // lifecycle operation, so requests don't race the startup reconnect.
+  async _ready() {
+    if (this.initPromise) {
+      try {
+        await this.initPromise;
+      } catch {
+      }
+    }
+  }
+  async startLogin(phone, opts = {}) {
+    await this._ready();
+    if (this.campaign.active || this.addJob.active) throw new Error("Stop the running campaign/add job before logging in");
+    if (this.pendingLoginAccountId) throw new Error("A login is already in progress");
+    let acc;
+    if (opts.accountId) {
+      acc = this._getAccount(opts.accountId);
+      if (!acc) throw new Error("Account not found");
+      if (opts.apiId && opts.apiHash) {
+        acc.apiId = parseInt(String(opts.apiId));
+        acc.apiHash = String(opts.apiHash);
+        this._saveAccount(acc);
+      }
+    } else if (opts.createNew || opts.label || opts.apiId && opts.apiHash) {
+      acc = this.createAccount(opts.label || "", opts.apiId, opts.apiHash);
+    } else {
+      acc = this._getAccount(this.activeAccountId) || this.createAccount("Account 1", opts.apiId, opts.apiHash);
+    }
+    const { apiId, apiHash } = this.getCredsForAccount(acc);
+    if (!apiId || !apiHash) throw new Error("Telegram API ID and API Hash required \u2014 add them for this account or set global keys in Settings");
+    await this.disconnect();
+    this.pendingLoginAccountId = acc.id;
+    this.activeAccountId = acc.id;
+    this.loginState = "awaiting_code";
+    this.loginError = null;
+    const store = readAccountsStore();
+    store.activeId = acc.id;
+    writeAccountsStore(store);
     const session = new import_sessions.StringSession("");
-    this.tgClient = new import_telegram.TelegramClient(session, apiId, apiHash, { connectionRetries: 3 });
-    this.tgClient.start({
+    const client = new import_telegram.TelegramClient(session, apiId, apiHash, { connectionRetries: 3 });
+    this.tgClient = client;
+    const accId = acc.id;
+    client.start({
       phoneNumber: async () => phone,
       phoneCode: async () => new Promise((resolve) => {
         this.pending.phoneCode = resolve;
       }),
       password: async () => new Promise((resolve) => {
+        this.loginState = "awaiting_password";
         this.pending.password = resolve;
       }),
       onError: (err) => console.log("[Bot] Login error:", err.message)
     }).then(async () => {
-      const sessionStr = this.tgClient.session.save();
-      writeJSON("tg_session.json", { session: sessionStr });
-      this.tgMe = await this.tgClient.getMe();
+      const sessionStr = client.session.save();
+      const me = await client.getMe();
+      const saved = this._getAccount(accId);
+      if (saved) {
+        saved.session = sessionStr;
+        saved.username = me?.username || null;
+        saved.phone = me?.phone || null;
+        saved.name = me?.firstName || null;
+        this._saveAccount(saved);
+      }
+      this.tgMe = me;
       this.isConnected = true;
-      console.log(`[Bot] \u2705 Logged in as @${this.tgMe.username}`);
+      this.pendingLoginAccountId = null;
+      this.loginState = "connected";
+      console.log(`[Bot] \u2705 Logged in as @${this.tgMe?.username}`);
       this.registerHandler();
     }).catch((err) => {
       console.log("[Bot] Login failed:", err.message);
+      this.pending.phoneCode = null;
+      this.pending.password = null;
+      this.pendingLoginAccountId = null;
+      this.loginState = "error";
+      this.loginError = err?.message || "Login failed";
     });
   }
   submitCode(code) {
@@ -78205,15 +78416,17 @@ var TelegramBotEngine = class {
     this.pending.password = null;
   }
   async disconnect() {
+    await this._ready();
     if (this.tgClient) {
       try {
         await this.tgClient.disconnect();
       } catch {
       }
-      this.tgClient = null;
-      this.isConnected = false;
-      this.tgMe = null;
     }
+    this.tgClient = null;
+    this.isConnected = false;
+    this.tgMe = null;
+    this.handlerClient = null;
   }
   // Scrape members of a Telegram group/channel using the logged-in session.
   async scrapeGroup(link, limit = 5e3) {
@@ -78250,7 +78463,7 @@ var TelegramBotEngine = class {
     return members;
   }
   // ── Add-Members engine ──────────────────────────────────────────────────────
-  async startAddJob(targetGroup, members) {
+  async startAddJob(targetGroup, members, options = {}) {
     if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram \u2014 log in first");
     if (this.addJob.active) throw new Error("An add job is already running \u2014 stop it first");
     if (!members.length) throw new Error("No members provided");
@@ -78276,7 +78489,9 @@ var TelegramBotEngine = class {
       timer: null,
       log: [],
       floodWait: 0,
-      startTime: Date.now()
+      startTime: Date.now(),
+      noCooldown: options.noCooldown !== false,
+      peerFloodStop: false
     };
     this._addNext();
   }
@@ -78323,7 +78538,7 @@ var TelegramBotEngine = class {
           logEntry.error = "Cannot resolve user \u2014 no username, ID, or registered phone";
           logEntry.at = Date.now();
           this.addJob.failed++;
-          this.addJob.timer = setTimeout(() => this._addNext(), 500);
+          this.addJob.timer = setTimeout(() => this._addNext(), this.addJob.noCooldown ? 0 : 500);
           return;
         }
         const isChannel = targetEntity.className === "Channel";
@@ -78371,6 +78586,7 @@ var TelegramBotEngine = class {
           logEntry.status = "failed";
           logEntry.error = "PEER_FLOOD \u2014 account limited";
           this.addJob.failed++;
+          this.addJob.peerFloodStop = true;
         } else if (msg.includes("USER_BOT")) {
           logEntry.status = "skipped";
           logEntry.error = "User is a bot";
@@ -78382,7 +78598,12 @@ var TelegramBotEngine = class {
         }
         logEntry.at = Date.now();
       }
-      const delay = Math.floor(Math.random() * 3e3) + 2e3;
+      if (this.addJob.peerFloodStop) {
+        this.addJob.active = false;
+        this.addJob.log.push({ status: "stopped", msg: `\u26D4 Stopped: Telegram limited this account (PEER_FLOOD). Added: ${this.addJob.added}. Wait a while or switch to another account.`, at: Date.now() });
+        return;
+      }
+      const delay = this.addJob.noCooldown ? Math.floor(Math.random() * 120) + 130 : Math.floor(Math.random() * 3e3) + 2e3;
       this.addJob.timer = setTimeout(() => this._addNext(), delay);
     })();
   }
@@ -78398,6 +78619,7 @@ var TelegramBotEngine = class {
       index: j.index,
       percent: j.total > 0 ? Math.round(j.index / j.total * 100) : 0,
       floodWait: j.floodWait || 0,
+      noCooldown: !!j.noCooldown,
       elapsed: j.startTime ? Math.round((Date.now() - j.startTime) / 1e3) : 0,
       log: (j.log || []).slice(-100)
     };
@@ -78420,6 +78642,10 @@ var TelegramBotEngine = class {
       hasSmmKey: !!(process.env.SMM_API_KEY || this.settings.smmApiKey),
       hasSmsKey: !!(this.settings.smsApiKey || process.env.SMS_API_KEY || process.env.TWILIO_ACCOUNT_SID || process.env.TERMII_API_KEY),
       hasTgCreds: this.hasTgCreds(),
+      activeAccountId: this.activeAccountId,
+      loginState: this.loginState,
+      loginError: this.loginError,
+      pendingLogin: !!this.pendingLoginAccountId,
       campaign: cs,
       smsCampaign: null
     };
@@ -78786,7 +79012,9 @@ var TelegramBotEngine = class {
   }
   registerHandler() {
     if (!this.tgClient) return;
+    if (this.handlerClient === this.tgClient) return;
     this.tgClient.addEventHandler((event) => this.handleMessage(event), new import_events.NewMessage({}));
+    this.handlerClient = this.tgClient;
     console.log("[Bot] Message handler registered.");
   }
   async handleMessage(event) {
@@ -79474,11 +79702,53 @@ router2.post("/bot/disconnect", async (req, res) => {
 });
 router2.post("/login/start", async (req, res) => {
   const bot = getBotInstance();
-  const { phone } = req.body;
+  const { phone, accountId, createNew, label, apiId, apiHash } = req.body;
   if (!phone) return res.status(400).json({ ok: false, message: "phone required" });
   try {
-    await bot.startLogin(phone);
+    await bot.startLogin(phone, { accountId, createNew, label, apiId, apiHash });
     res.json({ ok: true, message: "Code sent \u2014 check Telegram" });
+  } catch (e) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+router2.get("/tg-accounts", (_req, res) => {
+  const bot = getBotInstance();
+  res.json(bot.getAccounts());
+});
+router2.post("/tg-accounts", (req, res) => {
+  const bot = getBotInstance();
+  const { label, apiId, apiHash } = req.body;
+  try {
+    const acc = bot.createAccount(label || "", apiId, apiHash);
+    res.json({ ok: true, account: { id: acc.id, label: acc.label } });
+  } catch (e) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+router2.patch("/tg-accounts/:id", (req, res) => {
+  const bot = getBotInstance();
+  const { label, apiId, apiHash } = req.body;
+  try {
+    bot.updateAccount(req.params.id, { label, apiId, apiHash });
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+router2.delete("/tg-accounts/:id", async (req, res) => {
+  const bot = getBotInstance();
+  try {
+    await bot.removeAccount(req.params.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+router2.post("/tg-accounts/:id/active", async (req, res) => {
+  const bot = getBotInstance();
+  try {
+    await bot.setActiveAccount(req.params.id);
+    res.json({ ok: true });
   } catch (e) {
     res.json({ ok: false, message: e.message });
   }
@@ -79597,7 +79867,7 @@ router2.post("/scrape/add-stop", (req, res) => {
 });
 router2.post("/scrape/add-members", async (req, res) => {
   const bot = getBotInstance();
-  const { sourceGroup, targetGroup, limit, members } = req.body;
+  const { sourceGroup, targetGroup, limit, members, noCooldown } = req.body;
   if (!targetGroup) return res.status(400).json({ ok: false, message: "targetGroup required" });
   try {
     let toAdd = members;
@@ -79605,7 +79875,7 @@ router2.post("/scrape/add-members", async (req, res) => {
       toAdd = await bot.scrapeGroup(sourceGroup, Math.min(parseInt(limit) || 5e3, 1e4));
     }
     if (!toAdd?.length) return res.status(400).json({ ok: false, message: "No members to add \u2014 provide sourceGroup or members array" });
-    await bot.startAddJob(targetGroup, toAdd);
+    await bot.startAddJob(targetGroup, toAdd, { noCooldown: noCooldown !== false });
     res.json({ ok: true, message: `Add job started for ${toAdd.length} members` });
   } catch (e) {
     res.json({ ok: false, message: e.message });
@@ -79613,7 +79883,7 @@ router2.post("/scrape/add-members", async (req, res) => {
 });
 router2.post("/scrape/add-from-list", async (req, res) => {
   const bot = getBotInstance();
-  const { listId, targetGroup } = req.body;
+  const { listId, targetGroup, noCooldown } = req.body;
   if (!listId || !targetGroup) return res.status(400).json({ ok: false, message: "listId and targetGroup required" });
   const list = readSubdirItem("contact-lists", listId, null);
   if (!list) return res.status(404).json({ ok: false, message: "Contact list not found" });
@@ -79626,7 +79896,7 @@ router2.post("/scrape/add-from-list", async (req, res) => {
     id: c.id || ""
   }));
   try {
-    await bot.startAddJob(targetGroup, members);
+    await bot.startAddJob(targetGroup, members, { noCooldown: noCooldown !== false });
     res.json({ ok: true, message: `Add job started for ${members.length} contacts from "${list.name}"` });
   } catch (e) {
     res.json({ ok: false, message: e.message });
@@ -100867,7 +101137,7 @@ if (process.env.NODE_ENV === "production") {
   const staticDir = path6.resolve(__dirname2, "../../telegram-bot/dist/public");
   app.use(import_express11.default.static(staticDir));
   app.use((req, res, next) => {
-    if (req.method !== "GET") return next();
+    if (req.method !== "GET" && req.method !== "HEAD") return next();
     res.sendFile(path6.join(staticDir, "index.html"));
   });
 }

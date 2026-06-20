@@ -47,7 +47,7 @@ export default function TgScraper() {
     queryFn: () => apiGet("/scrape/add-status"),
     refetchInterval: (query) => {
       const data = query.state.data as any;
-      return data?.active ? 1500 : false;
+      return data?.active ? 800 : false;
     },
   });
 
@@ -271,7 +271,7 @@ export default function TgScraper() {
                 <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50">
                   <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
                   <p className="text-xs text-muted-foreground">
-                    Scrapes source group first, then adds members one-by-one with a 2–5s delay. You can still use the scrape tool below to inspect members before adding.
+                    Scrapes the source group, then adds everyone as fast as Telegram allows — no countdown. It only pauses if Telegram enforces a flood wait, and stops automatically if the account gets rate-limited.
                   </p>
                 </div>
               </>
@@ -347,7 +347,7 @@ export default function TgScraper() {
                   <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50">
                     <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
                     <p className="text-xs text-muted-foreground">
-                      Adds one member every ~2–5 s to avoid flood limits. Users with privacy settings will be skipped automatically.
+                      Adds members as fast as Telegram allows — no countdown. Users with privacy settings are skipped automatically, and the job pauses on flood waits.
                     </p>
                   </div>
                 </>

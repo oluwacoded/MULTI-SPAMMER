@@ -37,8 +37,8 @@ function TelegramCredsCard() {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base flex items-center gap-2"><KeyRound className="w-4 h-4" /> Telegram API Keys</CardTitle>
-        <CardDescription>Required to log in and scrape groups. Get them free at my.telegram.org → API development tools.</CardDescription>
+        <CardTitle className="text-base flex items-center gap-2"><KeyRound className="w-4 h-4" /> Shared Telegram API Keys</CardTitle>
+        <CardDescription>Fallback keys used by any account that doesn't have its own. Accounts can override these on the Accounts page. Get them free at my.telegram.org → API development tools.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex items-center gap-2">

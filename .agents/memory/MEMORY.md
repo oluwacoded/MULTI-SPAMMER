@@ -1,1 +1,1 @@
-- [Express 5 SPA fallback](express5-spa-fallback.md) — bare `app.get("*")` crashes Express 5 at startup (path-to-regexp@8); production-only block hid it from dev. Use a path-less SPA-fallback middleware.
+- [Telegram multi-account + async login](telegram-multi-account-login.md) — single active connection, per-account creds w/ global fallback, stateful login via polled loginState; arming guard against stale cache.
