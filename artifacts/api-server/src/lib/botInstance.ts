@@ -305,7 +305,7 @@ class TelegramBotEngine {
           try {
             const result: any = await this.tgClient!.invoke(new Api.contacts.ImportContacts({
               contacts: [new (Api.InputPhoneContact as any)({
-                clientId: BigInt(Math.floor(Math.random() * 1000000000)),
+                clientId: BigInt(Math.floor(Math.random() * 1000000000)) as any,
                 phone: member.phone.replace(/[^\d+]/g, ""),
                 firstName: member.name || member.phone,
                 lastName: "",
@@ -564,7 +564,7 @@ class TelegramBotEngine {
           const imported: any = await this.tgClient!.invoke(
             new Api.contacts.ImportContacts({
               contacts: [new Api.InputPhoneContact({
-                clientId: BigInt(index),
+                clientId: BigInt(index) as any,
                 phone: normalised,
                 firstName: name || "User",
                 lastName: "",
@@ -756,7 +756,7 @@ class TelegramBotEngine {
     try {
       const ext = mimetype?.includes("mp4") ? "m4a" : mimetype?.includes("mpeg") ? "mp3" : "ogg";
       const ct = mimetype?.includes("mp4") ? "audio/mp4" : mimetype?.includes("mpeg") ? "audio/mpeg" : "audio/ogg";
-      const blob = new Blob([buffer], { type: ct });
+      const blob = new Blob([buffer as any], { type: ct });
       const form = new FormData();
       form.append("file", blob, "audio." + ext);
       form.append("model", "whisper-large-v3");
@@ -998,7 +998,7 @@ class TelegramBotEngine {
         if (cmd === "rps") { const choices = ["rock","paper","scissors"]; const u = (args[0]||"").toLowerCase(); const bot = choices[Math.floor(Math.random()*3)]; if (!choices.includes(u)) { await send("Pick: rock, paper, or scissors"); return; } const win = (u==="rock"&&bot==="scissors")||(u==="paper"&&bot==="rock")||(u==="scissors"&&bot==="paper"); await send(`You: ${u}\nMe: ${bot}\n${u===bot?"Tie 🤝":win?"You win 🏆":"I win 😤"}`); return; }
         if (cmd === "ship") { const names = args.join(" ").split(/\s+and\s+|\s*\+\s*|\s*&\s*/i); const n1=names[0]?.trim()||"you"; const n2=names[1]?.trim()||"them"; const pct=Math.floor(Math.random()*101); await send(`💘 ${n1} + ${n2}\n${pct}% compatible\n${pct>80?"Soulmates fr 🔥":pct>60?"Solid connection 💯":pct>40?"Could work 🤔":"Yikes 💀"}`); return; }
         if (cmd === "rate") { const thing = args.join(" ") || "that"; await send(`${thing}: ${Math.floor(Math.random()*101)}/100`); return; }
-        if (cmd === "choose") { const opts = args.join(" ").split(/\s*[\|\/,]\s*/).map(s=>s.trim()).filter(Boolean); await send(opts.length>=2?`I pick: *${opts[Math.floor(Math.random()*opts.length)]}* 🎯`:"Give options: .choose a | b | c"); return; }
+        if (cmd === "choose") { const opts = args.join(" ").split(/\s*[\|\/,]\s*/).map((s: string)=>s.trim()).filter(Boolean); await send(opts.length>=2?`I pick: *${opts[Math.floor(Math.random()*opts.length)]}* 🎯`:"Give options: .choose a | b | c"); return; }
         if (cmd === "rizz") { const pct=Math.floor(Math.random()*101); await send(`Rizz level: ${pct}/100\n${pct>80?"🔥 God-tier":pct>60?"💪 Decent":pct>40?"😐 Mid":pct>20?"😬 Low":"💀 No rizz bro"}`); return; }
         if (cmd === "sus") { await send(`${args.join(" ")||"you"} is ${Math.floor(Math.random()*101)}% sus 🔴`); return; }
         if (cmd === "hype") { const h=["LET'S GOOOOO 🔥🔥🔥","W BEHAVIOR FR 💯","NO CAP THAT'S DIFFERENT 🏆","GOATED WITH THE SAUCE 🐐"]; await send(h[Math.floor(Math.random()*h.length)]); return; }

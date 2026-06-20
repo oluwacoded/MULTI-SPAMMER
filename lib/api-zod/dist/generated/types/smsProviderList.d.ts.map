@@ -1,0 +1,1 @@
+{"version":3,"file":"smsProviderList.d.ts","sourceRoot":"","sources":["../../../src/generated/types/smsProviderList.ts"],"names":[],"mappings":"AAAA;;;;;;GAMG;AACH,OAAO,KAAK,EAAE,WAAW,EAAE,MAAM,eAAe,CAAC;AAEjD,MAAM,WAAW,eAAe;IAC9B,SAAS,EAAE,WAAW,EAAE,CAAC;IACzB,MAAM,EAAE,MAAM,CAAC;CAChB"}

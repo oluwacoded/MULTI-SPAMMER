@@ -1,0 +1,1 @@
+{"version":3,"file":"smmUser.d.ts","sourceRoot":"","sources":["../../../src/generated/types/smmUser.ts"],"names":[],"mappings":"AAAA;;;;;;GAMG;AAEH,MAAM,WAAW,OAAO;IACtB,EAAE,EAAE,MAAM,CAAC;IACX,KAAK,EAAE,MAAM,CAAC;IACd,gBAAgB;IAChB,IAAI,CAAC,EAAE,MAAM,GAAG,IAAI,CAAC;IACrB,OAAO,EAAE,MAAM,CAAC;IAChB,QAAQ,EAAE,MAAM,CAAC;CAClB"}
