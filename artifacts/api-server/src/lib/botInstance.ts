@@ -118,8 +118,18 @@ function freshAddJob(): any {
     members: [], targetEntity: null, timer: null, log: [], floodWait: 0, startTime: null,
     scrapePhase: false, currentSource: null, sourcesTotal: 0, sourcesDone: 0,
     noCooldown: false, peerFloodStop: false, fatalStop: false,
+    safeMode: false, maxAdds: 0,
   };
 }
+
+// Safe mode pacing: long, human-like gaps between adds and a per-run cap, which
+// dramatically lowers the chance Telegram flags the account with PEER_FLOOD.
+// There is NO way to bypass PEER_FLOOD in code (it's enforced server-side); the
+// only real lever is adding slowly and in small daily batches per account.
+const SAFE_DELAY_MIN_MS = 30_000;
+const SAFE_DELAY_MAX_MS = 75_000;
+const SAFE_MAX_ADDS = 40;
+
 function freshCampaign(): any {
   return {
     active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, noTelegram: 0,
@@ -588,7 +598,8 @@ class TelegramBotEngine {
     sourceGroups: string[],
     limit: number,
     preloadedMembers?: Array<{ username: string | null; phone: string | null; name: string; id: string }>,
-    accountId?: string
+    accountId?: string,
+    safeMode = false
   ) {
     const s = this.requireConnectedSession(accountId);
     const client = s.client!;
@@ -613,6 +624,7 @@ class TelegramBotEngine {
       scrapePhase: sourceGroups.length > 0, currentSource: sourceGroups[0] || null,
       sourcesTotal: sourceGroups.length, sourcesDone: 0,
       noCooldown: false, peerFloodStop: false, fatalStop: false,
+      safeMode, maxAdds: safeMode ? SAFE_MAX_ADDS : 0,
     };
     const job = s.addJob;
 
@@ -674,7 +686,7 @@ class TelegramBotEngine {
     })();
   }
 
-  async startAddJob(targetGroup: string, members: Array<{ username: string | null; phone: string | null; name: string; id: string }>, options: { noCooldown?: boolean } = {}, accountId?: string) {
+  async startAddJob(targetGroup: string, members: Array<{ username: string | null; phone: string | null; name: string; id: string }>, options: { noCooldown?: boolean; safeMode?: boolean; maxAdds?: number } = {}, accountId?: string) {
     const s = this.requireConnectedSession(accountId);
     const client = s.client!;
     if (s.addJob.active) throw new Error("An add job is already running on this account — stop it first");
@@ -695,7 +707,12 @@ class TelegramBotEngine {
     s.addJob = {
       active: true, total: members.length, added: 0, failed: 0, privacy: 0, index: 0,
       members, targetEntity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
-      noCooldown: options.noCooldown !== false, peerFloodStop: false, fatalStop: false,
+      noCooldown: options.safeMode ? false : options.noCooldown !== false,
+      peerFloodStop: false, fatalStop: false,
+      safeMode: !!options.safeMode,
+      maxAdds: options.safeMode
+        ? (options.maxAdds && options.maxAdds > 0 ? options.maxAdds : SAFE_MAX_ADDS)
+        : (options.maxAdds || 0),
       scrapePhase: false, currentSource: null, sourcesTotal: 0, sourcesDone: 0,
     };
     this._addNext(s);
@@ -711,6 +728,14 @@ class TelegramBotEngine {
     if (index >= members.length) {
       job.active = false;
       job.log.push({ status: "done", msg: `✅ Finished. Added: ${job.added}, Privacy restricted: ${job.privacy}, Failed: ${job.failed}`, at: Date.now() });
+      return;
+    }
+
+    // Safe-mode per-run cap: stop once the safe number of members has been added
+    // so the account rests before the next batch (prevents PEER_FLOOD escalation).
+    if (job.maxAdds > 0 && job.added >= job.maxAdds) {
+      job.active = false;
+      job.log.push({ status: "done", msg: `✅ Safe limit reached — added ${job.added} this run. Let this account rest a few hours (or use another account) before adding more, so Telegram doesn't flag it (PEER_FLOOD).`, at: Date.now() });
       return;
     }
 
@@ -870,9 +895,11 @@ class TelegramBotEngine {
         return;
       }
       // Turbo mode: no artificial countdown (tiny ~130–250ms floor only). FLOOD_WAIT still pauses.
-      const delay = job.noCooldown
-        ? Math.floor(Math.random() * 120) + 130
-        : Math.floor(Math.random() * 3000) + 2000;
+      const delay = job.safeMode
+        ? Math.floor(Math.random() * (SAFE_DELAY_MAX_MS - SAFE_DELAY_MIN_MS)) + SAFE_DELAY_MIN_MS
+        : job.noCooldown
+          ? Math.floor(Math.random() * 120) + 130
+          : Math.floor(Math.random() * 3000) + 2000;
       job.timer = setTimeout(() => this._addNext(s), delay);
     })();
   }
@@ -891,6 +918,8 @@ class TelegramBotEngine {
       percent: j.total > 0 ? Math.round(j.index / j.total * 100) : 0,
       floodWait: j.floodWait || 0,
       noCooldown: !!j.noCooldown,
+      safeMode: !!j.safeMode,
+      maxAdds: j.maxAdds || 0,
       startTime: j.startTime || 0,
       elapsed: j.startTime ? Math.round((Date.now() - j.startTime) / 1000) : 0,
       log: (j.log || []).slice(-100),

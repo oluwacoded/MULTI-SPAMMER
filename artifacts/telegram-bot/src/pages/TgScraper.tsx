@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiPost, apiGet } from "@/lib/api";
-import { Users, Download, Search, Loader2, Info, Save, AlertTriangle, Phone, AtSign, UserPlus, Zap, CheckCircle2, XCircle, ShieldX, BookUser, Plus, X, List } from "lucide-react";
+import { Users, Download, Search, Loader2, Info, Save, AlertTriangle, Phone, AtSign, UserPlus, Zap, CheckCircle2, XCircle, ShieldX, ShieldCheck, BookUser, Plus, X, List } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface Member { username: string | null; phone: string | null; name: string; id: string; }
@@ -26,6 +26,10 @@ export default function TgScraper() {
 
   const [link, setLink] = useState("");
   const [limit, setLimit] = useState("5000");
+  // Add pacing: "safe" adds slowly with a per-run cap (much less likely to trip
+  // Telegram's PEER_FLOOD limit); "turbo" adds as fast as Telegram allows.
+  const [addMode, setAddMode] = useState<"safe" | "turbo">("safe");
+  const safeMode = addMode === "safe";
   const [members, setMembers] = useState<Member[]>([]);
   const [saveDialog, setSaveDialog] = useState(false);
   const [listName, setListName] = useState("");
@@ -80,7 +84,7 @@ export default function TgScraper() {
   // Multi-source scrape & add
   const startAddDirect = useMutation({
     mutationFn: (data: { sourceGroups: string[]; targetGroup: string; limit: number }) =>
-      apiPost("/scrape/add-members", { ...data, accountId }),
+      apiPost("/scrape/add-members", { ...data, safeMode, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
         refetchAdd();
@@ -94,7 +98,7 @@ export default function TgScraper() {
 
   const startAdd = useMutation({
     mutationFn: (data: { targetGroup: string; members: Member[] }) =>
-      apiPost("/scrape/add-members", { ...data, accountId }),
+      apiPost("/scrape/add-members", { ...data, safeMode, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
         refetchAdd();
@@ -116,7 +120,7 @@ export default function TgScraper() {
 
   const startAddFromList = useMutation({
     mutationFn: (data: { listId: string; targetGroup: string }) =>
-      apiPost("/scrape/add-from-list", { ...data, accountId }),
+      apiPost("/scrape/add-from-list", { ...data, safeMode, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
         refetchAdd();
@@ -221,6 +225,39 @@ export default function TgScraper() {
             </CardContent>
           </Card>
         )}
+
+        <Card>
+          <CardContent className="p-4 space-y-2">
+            <Label className="text-xs text-muted-foreground">Add speed (applies to every add below)</Label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setAddMode("safe")}
+                className={cn(
+                  "flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors",
+                  safeMode ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" /> Safe (recommended)
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddMode("turbo")}
+                className={cn(
+                  "flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors",
+                  !safeMode ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Zap className="w-3.5 h-3.5" /> Turbo (risky)
+              </button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {safeMode
+                ? "Adds slowly (~30–75s between members) and stops after 40 per run, then rest the account. This is the safest way to avoid Telegram's PEER_FLOOD ban. Run again later or use another account for more."
+                : "Adds as fast as Telegram allows. Much higher risk of PEER_FLOOD — Telegram may limit or ban the account. Note: PEER_FLOOD can't be bypassed in code; it's enforced by Telegram."}
+            </p>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader className="pb-3">
@@ -350,7 +387,7 @@ export default function TgScraper() {
                 <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50">
                   <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
                   <p className="text-xs text-muted-foreground">
-                    Each source is scraped sequentially. Members appearing in multiple groups are only added once (deduplication by username/ID). Adds one member every ~2–5s to avoid flood limits.
+                    Each source is scraped sequentially. Members appearing in multiple groups are only added once (deduplication by username/ID). Pacing follows the Add speed setting above.
                   </p>
                 </div>
               </>
@@ -426,7 +463,7 @@ export default function TgScraper() {
                   <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50">
                     <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
                     <p className="text-xs text-muted-foreground">
-                      Adds members as fast as Telegram allows — no countdown. Users with privacy settings are skipped automatically, and the job pauses on flood waits.
+                      Pacing follows the Add speed setting above. Users with privacy settings are skipped automatically, and the job pauses on flood waits.
                     </p>
                   </div>
                 </>

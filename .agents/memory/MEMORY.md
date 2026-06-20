@@ -3,3 +3,4 @@
 - [Runtime config DB persistence](config-db-persistence.md) — `data/` is wiped on redeploy; `writeJSON` write-throughs to `app_config` table and boot restores it, so logins/creds survive. `@workspace/db` is composite — rebuild after schema edits.
 - [TG run-account selection](tg-run-account-selection.md) — keep per-page run-as-account sticky by account existence, not connected-state; transient GramJS reconnects must not switch the per-account status query mid-job.
 - [VM deployment resilience](vm-deployment-resilience.md) — recurring VM outages came from unguarded background async crashing the single Node process; add process-level handlers that log+stay alive, and a cheap always-200 `/api` health route.
+- [Telegram PEER_FLOOD](telegram-peer-flood.md) — server-side add limit, NO code bypass exists; only mitigation is slow pacing + small per-run cap ("safe mode", default in scraper) and resting/aged accounts.

@@ -203,7 +203,7 @@ router.post("/scrape/add-stop", (req, res) => {
 // Also accepts legacy single: { targetGroup, sourceGroup: string, limit?, members? }
 router.post("/scrape/add-members", async (req, res) => {
   const bot = getBotInstance();
-  const { sourceGroup, sourceGroups, targetGroup, limit, members, noCooldown, accountId } = req.body;
+  const { sourceGroup, sourceGroups, targetGroup, limit, members, noCooldown, safeMode, accountId } = req.body;
   if (!targetGroup) return res.status(400).json({ ok: false, message: "targetGroup required" });
 
   const maxLimit = Math.min(parseInt(limit) || 5000, 10000);
@@ -219,11 +219,11 @@ router.post("/scrape/add-members", async (req, res) => {
   try {
     if (sources.length > 0) {
       // Multi-source (or single-source via new path): scrape then add
-      await bot.startMultiSourceAddJob(targetGroup, sources, maxLimit, members?.length ? members : undefined, accountId);
+      await bot.startMultiSourceAddJob(targetGroup, sources, maxLimit, members?.length ? members : undefined, accountId, !!safeMode);
       res.json({ ok: true, message: `Scrape & add started for ${sources.length} source group${sources.length > 1 ? "s" : ""}` });
     } else if (members?.length) {
       // Pre-loaded members (from the manual scrape flow) — add directly
-      await bot.startAddJob(targetGroup, members, undefined, accountId);
+      await bot.startAddJob(targetGroup, members, { safeMode: !!safeMode }, accountId);
       res.json({ ok: true, message: `Add job started for ${members.length} members` });
     } else {
       res.status(400).json({ ok: false, message: "Provide sourceGroups, sourceGroup, or a members array" });
@@ -236,7 +236,7 @@ router.post("/scrape/add-members", async (req, res) => {
 // Add contacts from a saved contact list to a target group
 router.post("/scrape/add-from-list", async (req, res) => {
   const bot = getBotInstance();
-  const { listId, targetGroup, noCooldown, accountId } = req.body;
+  const { listId, targetGroup, noCooldown, safeMode, accountId } = req.body;
   if (!listId || !targetGroup) return res.status(400).json({ ok: false, message: "listId and targetGroup required" });
   const list = readSubdirItem<any>("contact-lists", listId, null);
   if (!list) return res.status(404).json({ ok: false, message: "Contact list not found" });
@@ -249,7 +249,7 @@ router.post("/scrape/add-from-list", async (req, res) => {
     id: c.id || "",
   }));
   try {
-    await bot.startAddJob(targetGroup, members, { noCooldown: noCooldown !== false }, accountId);
+    await bot.startAddJob(targetGroup, members, { safeMode: !!safeMode, noCooldown: noCooldown !== false }, accountId);
     res.json({ ok: true, message: `Add job started for ${members.length} contacts from "${list.name}"` });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });
