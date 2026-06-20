@@ -29,20 +29,28 @@ export function useRunAccount(refetchInterval = 3000) {
   const { data: status } = useGetBotStatus({ query: { refetchInterval } });
   const accounts: TgAccountInfo[] = ((status as any)?.accounts as TgAccountInfo[]) || [];
   const connected = useMemo(() => accounts.filter((a) => a.connected), [accounts]);
-  const connectedIds = connected.map((a) => a.id).join(",");
+  const accountIds = accounts.map((a) => a.id).join(",");
 
   const [accountId, setAccountIdState] = useState<string>(() => localStorage.getItem(STORE_KEY) || "");
 
-  // Keep the selection valid: if the stored account isn't connected, fall back
-  // to the active account, else the first connected one.
+  // Keep the selection STICKY: only re-pick when the chosen account no longer
+  // exists (removed) or nothing is selected yet. We deliberately do NOT reset
+  // when the account merely drops to disconnected for a moment — a Telegram
+  // reconnect during a heavy scrape would otherwise flip the run-account back to
+  // another account mid-job, switching the add-status query and making the
+  // running job appear to vanish. Prefer a connected account on first pick.
   useEffect(() => {
-    if (!connected.length) return;
-    if (connected.some((a) => a.id === accountId)) return;
-    const fallback = connected.find((a) => a.active)?.id || connected[0].id;
+    if (!accounts.length) return;
+    if (accountId && accounts.some((a) => a.id === accountId)) return;
+    const fallback =
+      accounts.find((a) => a.connected && a.active)?.id ||
+      accounts.find((a) => a.connected)?.id ||
+      accounts.find((a) => a.active)?.id ||
+      accounts[0].id;
     setAccountIdState(fallback);
     localStorage.setItem(STORE_KEY, fallback);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectedIds, accountId]);
+  }, [accountIds, accountId]);
 
   const setAccountId = (id: string) => {
     setAccountIdState(id);

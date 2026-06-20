@@ -18,8 +18,11 @@ export function AccountSelector({
   label?: string;
   className?: string;
 }) {
-  const connected = accounts.filter((a) => a.connected);
-  if (connected.length === 0) return null;
+  // Show all connected accounts, plus the currently-selected one even if it has
+  // momentarily dropped to disconnected (e.g. a Telegram reconnect mid-scrape) so
+  // the dropdown never goes blank and snaps the selection to another account.
+  const selectable = accounts.filter((a) => a.connected || a.id === accountId);
+  if (selectable.length === 0) return null;
 
   return (
     <div className={className}>
@@ -31,13 +34,14 @@ export function AccountSelector({
           <SelectValue placeholder="Select account…" />
         </SelectTrigger>
         <SelectContent>
-          {connected.map((a) => {
+          {selectable.map((a) => {
             const busy = a.addJob?.active ? "adding…" : a.campaign?.active ? "sending…" : null;
+            const offline = !a.connected;
             return (
               <SelectItem key={a.id} value={a.id}>
                 {a.label}
                 {a.username ? ` · @${a.username}` : ""}
-                {busy ? ` · ${busy}` : ""}
+                {busy ? ` · ${busy}` : offline ? " · reconnecting…" : ""}
               </SelectItem>
             );
           })}
