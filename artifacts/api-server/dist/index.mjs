@@ -78296,24 +78296,34 @@ var TelegramBotEngine = class {
       if (this.addJob.log.length > 300) this.addJob.log = this.addJob.log.slice(-300);
       try {
         const { Api } = await Promise.resolve().then(() => __toESM(require_telegram(), 1));
-        const identifier = member.username ? member.username : member.id ? BigInt(member.id) : null;
-        if (!identifier) {
+        let userEntity = null;
+        if (member.username || member.id) {
+          const identifier = member.username ? member.username : BigInt(member.id);
+          try {
+            userEntity = await this.tgClient.getEntity(identifier);
+          } catch {
+          }
+        }
+        if (!userEntity && member.phone) {
+          try {
+            const result = await this.tgClient.invoke(new Api.contacts.ImportContacts({
+              contacts: [new Api.InputPhoneContact({
+                clientId: BigInt(Math.floor(Math.random() * 1e9)),
+                phone: member.phone.replace(/[^\d+]/g, ""),
+                firstName: member.name || member.phone,
+                lastName: ""
+              })]
+            }));
+            userEntity = result.users?.[0] || null;
+          } catch {
+          }
+        }
+        if (!userEntity) {
           logEntry.status = "skipped";
-          logEntry.error = "No username or ID";
+          logEntry.error = "Cannot resolve user \u2014 no username, ID, or registered phone";
           logEntry.at = Date.now();
           this.addJob.failed++;
           this.addJob.timer = setTimeout(() => this._addNext(), 500);
-          return;
-        }
-        let userEntity;
-        try {
-          userEntity = await this.tgClient.getEntity(identifier);
-        } catch {
-          logEntry.status = "failed";
-          logEntry.error = "Could not resolve user entity";
-          logEntry.at = Date.now();
-          this.addJob.failed++;
-          this.addJob.timer = setTimeout(() => this._addNext(), 1e3);
           return;
         }
         const isChannel = targetEntity.className === "Channel";

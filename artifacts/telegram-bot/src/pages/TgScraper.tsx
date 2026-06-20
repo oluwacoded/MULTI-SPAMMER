@@ -134,6 +134,7 @@ export default function TgScraper() {
         phone: m.phone || (m.username ? `@${m.username}` : ""),
         name: m.name,
         username: m.username || undefined,
+        id: m.id || undefined,
       }))
       .filter(c => c.phone);
     if (!contacts.length) {

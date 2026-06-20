@@ -152,7 +152,12 @@ export default function TgCampaign() {
     onSuccess: (res: any) => {
       if (res.ok) {
         const mapped = (res.members || [])
-          .map((m: any) => ({ phone: m.phone || (m.username ? `@${m.username}` : ""), name: m.name }))
+          .map((m: any) => ({
+            phone: m.phone || (m.username ? `@${m.username}` : ""),
+            name: m.name,
+            username: m.username || undefined,
+            id: m.id || undefined,
+          }))
           .filter((c: any) => c.phone);
         setContacts(mapped);
         toast({ title: `Loaded ${mapped.length} contacts`, description: `from ${res.count} group members` });
