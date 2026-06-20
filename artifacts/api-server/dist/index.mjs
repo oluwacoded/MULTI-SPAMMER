@@ -100866,7 +100866,8 @@ app.use("/api", routes_default);
 if (process.env.NODE_ENV === "production") {
   const staticDir = path6.resolve(__dirname2, "../../telegram-bot/dist/public");
   app.use(import_express11.default.static(staticDir));
-  app.get("*", (_req, res) => {
+  app.use((req, res, next) => {
+    if (req.method !== "GET") return next();
     res.sendFile(path6.join(staticDir, "index.html"));
   });
 }

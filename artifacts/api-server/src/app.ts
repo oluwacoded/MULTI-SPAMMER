@@ -45,7 +45,10 @@ app.use("/api", router);
 if (process.env.NODE_ENV === "production") {
   const staticDir = path.resolve(__dirname, "../../telegram-bot/dist/public");
   app.use(express.static(staticDir));
-  app.get("*", (_req, res) => {
+  // SPA fallback. Use a path-less middleware instead of a wildcard route ("*"):
+  // Express 5 uses path-to-regexp@8, which throws on a bare "*" path at startup.
+  app.use((req, res, next) => {
+    if (req.method !== "GET" && req.method !== "HEAD") return next();
     res.sendFile(path.join(staticDir, "index.html"));
   });
 }
