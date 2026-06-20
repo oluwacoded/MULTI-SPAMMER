@@ -178,6 +178,20 @@ export default function TgScraper() {
 
   const savedLists: any[] = listsData?.lists || [];
   const addJobActive = (addStatus as any)?.active;
+  const addJobLog = (addStatus as any)?.log;
+
+  // Keep the finished job's result (and its log explaining why it ended) on screen
+  // until the user dismisses it or a new job starts — otherwise the card vanishes
+  // the instant the job goes inactive and the form reappears with no explanation.
+  // Key the dismissal on job identity (account + startTime) so dismissing one
+  // account's result never hides another's, and a brand-new job (even one that
+  // finishes between polls) always shows because its key differs.
+  const addJobStartTime = (addStatus as any)?.startTime ?? 0;
+  const jobKey = addJobStartTime ? `${accountId ?? ""}:${addJobStartTime}` : null;
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
+  const addJobFinished = !addJobActive && jobKey != null && dismissedKey !== jobKey && Array.isArray(addJobLog) && addJobLog.length > 0;
+  const addJobVisible = addJobActive || addJobFinished;
+  const dismissResult = () => setDismissedKey(jobKey);
 
   return (
     <Layout>
@@ -257,8 +271,8 @@ export default function TgScraper() {
             <CardDescription>Queue multiple source groups — the bot scrapes all of them, deduplicates, and adds members to your target in one pass</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {addJobActive ? (
-              <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} />
+            {addJobVisible ? (
+              <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} onDismiss={dismissResult} />
             ) : (
               <>
                 {/* Source groups list */}
@@ -388,8 +402,8 @@ export default function TgScraper() {
               <CardDescription>Auto-add all {members.length} scraped members to one of your groups or channels</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {addJobActive ? (
-                <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} />
+              {addJobVisible ? (
+                <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} onDismiss={dismissResult} />
               ) : (
                 <>
                   <div>
@@ -422,15 +436,15 @@ export default function TgScraper() {
         )}
 
         {/* Live add-job progress even after members are cleared */}
-        {!members.length && addJobActive && (
+        {!members.length && addJobVisible && (
           <Card className="border-primary/20">
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">
-                <UserPlus className="w-4 h-4 text-primary" /> Add Job Running
+                <UserPlus className="w-4 h-4 text-primary" /> {addJobActive ? "Add Job Running" : "Last Job Result"}
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} />
+              <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} onDismiss={dismissResult} />
             </CardContent>
           </Card>
         )}
@@ -448,8 +462,8 @@ export default function TgScraper() {
               <p className="text-xs text-muted-foreground">No saved contact lists yet. Scrape a group and save it, or build one in the Telegram Campaign page.</p>
             ) : (
               <>
-                {addJobActive ? (
-                  <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} />
+                {addJobVisible ? (
+                  <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} onDismiss={dismissResult} />
                 ) : (
                   <>
                     <div>
@@ -515,8 +529,9 @@ export default function TgScraper() {
   );
 }
 
-function AddJobProgress({ status, onStop, stopping }: { status: any; onStop: () => void; stopping: boolean }) {
+function AddJobProgress({ status, onStop, stopping, onDismiss }: { status: any; onStop: () => void; stopping: boolean; onDismiss?: () => void }) {
   const pct = status?.percent ?? 0;
+  const active = status?.active ?? false;
   const scrapePhase = status?.scrapePhase ?? false;
   const currentSource = status?.currentSource ?? null;
   const sourcesTotal = status?.sourcesTotal ?? 0;
@@ -526,9 +541,9 @@ function AddJobProgress({ status, onStop, stopping }: { status: any; onStop: () 
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+          <span className={cn("w-2 h-2 rounded-full", active ? "bg-green-500 animate-pulse" : "bg-muted-foreground")} />
           <p className="text-sm font-semibold">
-            {scrapePhase ? "Scraping sources…" : "Adding members…"}
+            {active ? (scrapePhase ? "Scraping sources…" : "Adding members…") : "Job finished"}
           </p>
           {scrapePhase && sourcesTotal > 0 && (
             <Badge variant="outline" className="text-blue-400 border-blue-400/40 text-xs">
@@ -605,10 +620,16 @@ function AddJobProgress({ status, onStop, stopping }: { status: any; onStop: () 
         </div>
       )}
 
-      <Button variant="destructive" size="sm" className="w-full" onClick={onStop} disabled={stopping}>
-        {stopping ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : null}
-        Stop Job
-      </Button>
+      {active ? (
+        <Button variant="destructive" size="sm" className="w-full" onClick={onStop} disabled={stopping}>
+          {stopping ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : null}
+          Stop Job
+        </Button>
+      ) : (
+        <Button variant="secondary" size="sm" className="w-full" onClick={onDismiss}>
+          Done
+        </Button>
+      )}
     </div>
   );
 }

@@ -660,7 +660,7 @@ class TelegramBotEngine {
       if (!allMembers.length) {
         job.active = false;
         job.scrapePhase = false;
-        job.log.push({ status: "done", msg: "⚠️ No members found across all source groups.", at: Date.now() });
+        job.log.push({ status: "done", msg: "⚠️ No members found. The source may be a broadcast channel (members hidden) or this account isn't a member/admin of it — join the source group with this account first, or use a public group whose members are visible.", at: Date.now() });
         return;
       }
 
@@ -891,6 +891,7 @@ class TelegramBotEngine {
       percent: j.total > 0 ? Math.round(j.index / j.total * 100) : 0,
       floodWait: j.floodWait || 0,
       noCooldown: !!j.noCooldown,
+      startTime: j.startTime || 0,
       elapsed: j.startTime ? Math.round((Date.now() - j.startTime) / 1000) : 0,
       log: (j.log || []).slice(-100),
       scrapePhase: j.scrapePhase || false,

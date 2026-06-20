@@ -37,3 +37,14 @@ and re-click (spawning more scrapes → more flood waits). Fix: stream with
 entry in place — getAddStatus already serializes job.log, so no new fields needed). Large
 limits (e.g. 5000) page 200 at a time and reliably trigger flood waits; that's Telegram, not
 a bug — the wait time comes from Telegram and cannot be shortened.
+
+## A finished job (active:false) must keep its result on screen
+The scrape/add UI gated every progress card on `addStatus.active`, so the instant a job
+ended the cards vanished and the form reappeared — users read this as "it cancelled / went
+back to the menu with no error", even though the backend had logged the real reason (e.g.
+"No members found" when a source is a broadcast channel that hides members, or the running
+account isn't a member/admin). Fix: keep the finished result + its log visible until the
+user dismisses it, and gate visibility on a derived `addJobVisible = active || finished`.
+Key the dismissal on JOB IDENTITY (accountId + startTime from getAddStatus), NOT a boolean:
+a boolean reset-on-active races on fast-finishing jobs (a job that starts AND ends between
+800ms polls is never observed active, so it'd stay dismissed) and leaks across accounts.
