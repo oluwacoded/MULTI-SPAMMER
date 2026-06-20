@@ -523,7 +523,7 @@ class TelegramBotEngine {
   }
 
   // Scrape members of a Telegram group/channel using a specific account's session.
-  async scrapeGroup(link: string, limit = 5000, accountId?: string): Promise<{ username: string | null; phone: string | null; name: string; id: string }[]> {
+  async scrapeGroup(link: string, limit = 5000, accountId?: string, onProgress?: (found: number) => void): Promise<{ username: string | null; phone: string | null; name: string; id: string }[]> {
     const s = this.requireConnectedSession(accountId);
     const client = s.client!;
     if (!link || !link.trim()) throw new Error("Group link or username required");
@@ -544,9 +544,27 @@ class TelegramBotEngine {
       throw new Error(`Could not find that group: ${e?.errorMessage || e?.message || "unknown error"}`);
     }
 
-    let participants: any[] = [];
+    // Stream participants instead of one blocking call so we can report live
+    // progress. Telegram throttles GetParticipants on big groups (FLOOD_WAIT);
+    // GramJS auto-sleeps short waits, so the live count just pauses then resumes —
+    // the caller surfaces that count so the UI never looks frozen.
+    const members: { username: string | null; phone: string | null; name: string; id: string }[] = [];
     try {
-      participants = await client.getParticipants(entity, { limit }) as any[];
+      let seen = 0;
+      for await (const u of client.iterParticipants(entity, { limit } as any)) {
+        seen++;
+        const user = u as any;
+        if (user && !user.bot && !user.deleted) {
+          members.push({
+            username: user.username || null,
+            phone: user.phone ? (user.phone.startsWith("+") ? user.phone : "+" + user.phone) : null,
+            name: [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username || "Member",
+            id: user.id?.toString() || "",
+          });
+        }
+        if (onProgress && seen % 100 === 0) onProgress(members.length);
+      }
+      if (onProgress) onProgress(members.length);
     } catch (e: any) {
       const msg = e?.errorMessage || e?.message || "";
       if (msg.includes("CHAT_ADMIN_REQUIRED") || msg.includes("ADMIN")) {
@@ -554,15 +572,6 @@ class TelegramBotEngine {
       }
       throw new Error(`Could not pull members: ${msg || "unknown error"}`);
     }
-
-    const members = participants
-      .filter((u: any) => u && !u.bot && !u.deleted)
-      .map((u: any) => ({
-        username: u.username || null,
-        phone: u.phone ? (u.phone.startsWith("+") ? u.phone : "+" + u.phone) : null,
-        name: [u.firstName, u.lastName].filter(Boolean).join(" ") || u.username || "Member",
-        id: u.id?.toString() || "",
-      }));
     return members;
   }
 
@@ -629,10 +638,15 @@ class TelegramBotEngine {
         const src = sourceGroups[si];
         job.currentSource = src;
         job.sourcesDone = si;
-        job.log.push({ status: "scraping", msg: `🔍 Scraping ${src} (${si + 1}/${sourceGroups.length})…`, at: Date.now() });
+        // Keep a reference to this log line and update it live with the running
+        // count, so a slow/throttled scrape shows progress instead of looking frozen.
+        const scrapeLog: any = { status: "scraping", msg: `🔍 Scraping ${src} (${si + 1}/${sourceGroups.length})…`, at: Date.now() };
+        job.log.push(scrapeLog);
 
         try {
-          const scraped = await this.scrapeGroup(src, limit, s.accountId);
+          const scraped = await this.scrapeGroup(src, limit, s.accountId, (found) => {
+            scrapeLog.msg = `🔍 Scraping ${src} (${si + 1}/${sourceGroups.length}) — ${found} members so far…`;
+          });
           for (const m of scraped) dedupAdd(m);
           job.log.push({ status: "scraped", msg: `✅ ${src} — ${scraped.length} found, ${allMembers.length} unique so far`, at: Date.now() });
         } catch (e: any) {

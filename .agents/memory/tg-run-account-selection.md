@@ -26,3 +26,14 @@ goes blank.
 Note: API keys (api_id/api_hash) alone never connect an account — each linked account
 still needs a one-time interactive phone+code login (code is delivered to that
 account's Telegram app), so credentials cannot be provisioned headlessly by the agent.
+
+## Scrape "freeze" is almost always a GetParticipants FLOOD_WAIT
+Production logs showed `Sleeping for Ns on flood wait (Caused by channels.GetParticipants)`
+while the multi-source job sat at "Scraping… 0/1". The scrape was NOT cancelling — GramJS
+silently auto-sleeps short flood waits, so with a single blocking getParticipants call the
+UI shows no progress and users assume it froze, reload (clearing the form's React state),
+and re-click (spawning more scrapes → more flood waits). Fix: stream with
+`client.iterParticipants` and surface a live running count (mutate the job's "scraping" log
+entry in place — getAddStatus already serializes job.log, so no new fields needed). Large
+limits (e.g. 5000) page 200 at a time and reliably trigger flood waits; that's Telegram, not
+a bug — the wait time comes from Telegram and cannot be shortened.
