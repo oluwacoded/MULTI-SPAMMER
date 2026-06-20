@@ -31,6 +31,15 @@ export async function apiPost<T = any>(path: string, body?: unknown): Promise<T>
   return r.json();
 }
 
+export async function apiPatch<T = any>(path: string, body?: unknown): Promise<T> {
+  const r = await apiFetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return r.json();
+}
+
 export async function apiDelete<T = any>(path: string): Promise<T> {
   const r = await apiFetch(path, { method: "DELETE" });
   return r.json();

@@ -1,1 +1,1 @@
-- [Telegram multi-account + async login](telegram-multi-account-login.md) — single active connection, per-account creds w/ global fallback, stateful login via polled loginState; arming guard against stale cache.
+- [Telegram concurrent multi-account](telegram-multi-account.md) — all accounts stay connected & run own jobs; `activeAccountId` is default-view only; account-scoped endpoints use raw fetch, not the generated client.

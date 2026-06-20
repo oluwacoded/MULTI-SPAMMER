@@ -92,10 +92,43 @@ const SCAM_PATTERNS = [
   /click (this|the) link to (claim|receive|get)/i
 ];
 
+// ── Per-account session ───────────────────────────────────────────────────────
+// Each linked Telegram account gets its OWN connected client, message handler,
+// login state, add-members job and campaign — so multiple accounts can stay
+// connected and run jobs concurrently without interfering with each other.
+type LoginState = "idle" | "awaiting_code" | "awaiting_password" | "connected" | "error";
+interface AccountSession {
+  accountId: string;
+  client: TelegramClient | null;
+  me: any;
+  connected: boolean;
+  handlerRegistered: boolean;
+  loginState: LoginState;
+  loginError: string | null;
+  pending: { phoneCode: ((v: string) => void) | null; password: ((v: string) => void) | null };
+  addJob: any;
+  campaign: any;
+}
+
+function freshAddJob(): any {
+  return {
+    active: false, total: 0, added: 0, failed: 0, privacy: 0, index: 0,
+    members: [], targetEntity: null, timer: null, log: [], floodWait: 0, startTime: null,
+    scrapePhase: false, currentSource: null, sourcesTotal: 0, sourcesDone: 0,
+    noCooldown: false, peerFloodStop: false, fatalStop: false,
+  };
+}
+function freshCampaign(): any {
+  return {
+    active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, noTelegram: 0,
+    skipped: 0, startTime: null, timer: null, onUpdate: null, delayMs: 2400, log: [],
+    batchCount: 0, floodWait: 0, options: {},
+  };
+}
+
 class TelegramBotEngine {
-  private tgClient: TelegramClient | null = null;
-  private tgMe: any = null;
-  private isConnected = false;
+  // Per-account connected sessions (the core of concurrent multi-account).
+  private sessions = new Map<string, AccountSession>();
   private startTime = Date.now();
   private messageCount = 0;
   private settings: any;
@@ -108,6 +141,8 @@ class TelegramBotEngine {
   private autoReplies: any;
   private walletData: any;
   private scamAlerts: any[];
+  // AI/conversation state maps — keyed by `${accountId}:${chatId}` so per-account
+  // auto-reply state never collides when two accounts talk to the same chat.
   private answerSessions = new Map<string, number>();
   private aiPaused = new Map<string, number>();
   private ownerTakeover = new Map<string, number>();
@@ -115,17 +150,57 @@ class TelegramBotEngine {
   private disclaimerSent = new Map<string, string>();
   private activePersona = new Map<string, string>();
   private rateLimitMap = new Map<string, any>();
-  private pending: { phoneCode: ((v: string) => void) | null; password: ((v: string) => void) | null } = { phoneCode: null, password: null };
+  // The "default view" account for legacy/unscoped requests — NOT exclusivity.
   private activeAccountId: string | null = null;
-  private pendingLoginAccountId: string | null = null;
-  private loginState: "idle" | "awaiting_code" | "awaiting_password" | "connected" | "error" = "idle";
-  private loginError: string | null = null;
   private initPromise: Promise<void> | null = null;
-  private switching = false;
-  private handlerClient: TelegramClient | null = null;
-  private campaign: any = { active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, noTelegram: 0, skipped: 0, startTime: null, timer: null, onUpdate: null, delayMs: 2400, log: [], batchCount: 0, floodWait: 0, options: {} };
-  private addJob: any = { active: false, total: 0, added: 0, failed: 0, privacy: 0, index: 0, members: [], targetEntity: null, timer: null, log: [], floodWait: 0, startTime: null, scrapePhase: false, currentSource: null, sourcesTotal: 0, sourcesDone: 0 };
   private blacklist = new Set<string>();
+
+  // ── Session helpers ─────────────────────────────────────────────────────────
+  private getSession(accountId: string, create = false): AccountSession | null {
+    let s = this.sessions.get(accountId);
+    if (!s && create) {
+      s = {
+        accountId, client: null, me: null, connected: false, handlerRegistered: false,
+        loginState: "idle", loginError: null,
+        pending: { phoneCode: null, password: null },
+        addJob: freshAddJob(), campaign: freshCampaign(),
+      };
+      this.sessions.set(accountId, s);
+    }
+    return s || null;
+  }
+
+  // Resolve which account an unscoped request targets: explicit > active > first.
+  private resolveAccountId(accountId?: string | null): string | null {
+    if (accountId) return accountId;
+    if (this.activeAccountId) return this.activeAccountId;
+    return readAccountsStore().accounts[0]?.id || null;
+  }
+
+  // For job operations that require a live connection on a specific account.
+  private requireConnectedSession(accountId?: string | null): AccountSession {
+    const id = this.resolveAccountId(accountId);
+    if (!id) throw new Error("No Telegram account selected — log in first");
+    const s = this.getSession(id);
+    if (!s || !s.connected || !s.client) throw new Error("Not connected to Telegram — log in first");
+    return s;
+  }
+
+  // For login submit (code/2fa): the explicit account, else the one awaiting input.
+  private loginSession(accountId?: string | null): AccountSession {
+    if (accountId) {
+      const s = this.sessions.get(accountId);
+      if (!s) throw new Error("No login in progress for this account");
+      return s;
+    }
+    for (const s of this.sessions.values()) {
+      if (s.pending.phoneCode || s.pending.password) return s;
+    }
+    const id = this.resolveAccountId();
+    const s = id ? this.sessions.get(id) : null;
+    if (!s) throw new Error("No login in progress");
+    return s;
+  }
 
   constructor() {
     this.settings = { ...SETTINGS_DEFAULTS, ...readJSON("settings.json", {}) };
@@ -198,22 +273,31 @@ class TelegramBotEngine {
     return this.getTgCreds();
   }
 
-  getAccounts() {
+  private _serializeAccounts() {
     const store = readAccountsStore();
-    return {
-      activeId: this.activeAccountId,
-      accounts: store.accounts.map(a => ({
+    return store.accounts.map(a => {
+      const s = this.sessions.get(a.id);
+      return {
         id: a.id,
         label: a.label,
-        username: a.username || null,
-        phone: a.phone || null,
-        name: a.name || null,
+        username: s?.me?.username ?? a.username ?? null,
+        phone: s?.me?.phone ?? a.phone ?? null,
+        name: s?.me?.firstName ?? a.name ?? null,
         hasOwnCreds: !!(a.apiId && a.apiHash),
         hasSession: !!a.session,
         active: this.activeAccountId === a.id,
-        connected: this.isConnected && this.activeAccountId === a.id,
-      })),
-    };
+        connected: !!s?.connected,
+        loginState: s?.loginState ?? "idle",
+        loginError: s?.loginError ?? null,
+        pendingLogin: !!(s && (s.pending.phoneCode || s.pending.password)),
+        addJob: this.getAddStatus(a.id),
+        campaign: this.getCampaignStatus(a.id),
+      };
+    });
+  }
+
+  getAccounts() {
+    return { activeId: this.activeAccountId, accounts: this._serializeAccounts() };
   }
 
   createAccount(label: string, apiId?: number | string, apiHash?: string): TgAccount {
@@ -241,44 +325,37 @@ class TelegramBotEngine {
 
   async removeAccount(id: string) {
     await this._ready();
-    if (this.pendingLoginAccountId === id) throw new Error("Finish or cancel the login in progress first");
-    if ((this.campaign.active || this.addJob.active) && this.activeAccountId === id) {
-      throw new Error("Stop the running campaign/add job before removing the active account");
+    const s = this.sessions.get(id);
+    if (s && (s.loginState === "awaiting_code" || s.loginState === "awaiting_password")) {
+      throw new Error("Finish or cancel the login in progress first");
+    }
+    if (s && (s.campaign.active || s.addJob.active)) {
+      throw new Error("Stop this account's running campaign/add job before removing it");
     }
     const store = readAccountsStore();
     if (!store.accounts.some(a => a.id === id)) throw new Error("Account not found");
-    const wasActive = this.activeAccountId === id;
+    await this.disconnect(id);
+    this.sessions.delete(id);
     store.accounts = store.accounts.filter(a => a.id !== id);
-    if (wasActive) {
-      await this.disconnect();
-      this.activeAccountId = store.accounts[0]?.id || null;
-      store.activeId = this.activeAccountId;
-    }
+    if (this.activeAccountId === id) this.activeAccountId = store.accounts[0]?.id || null;
+    store.activeId = this.activeAccountId;
     writeAccountsStore(store);
-    if (wasActive && this.activeAccountId) {
-      const next = this._getAccount(this.activeAccountId);
-      if (next?.session) { try { await this.connectAccount(next); } catch {} }
-    }
   }
 
+  // "Active" is now just the default dashboard view (NOT exclusivity). Selecting an
+  // account makes it the default and ensures it's connected if it has a session —
+  // it never disconnects any other account.
   async setActiveAccount(id: string) {
     await this._ready();
-    if (this.pendingLoginAccountId) throw new Error("Finish the login in progress before switching accounts");
-    if (this.campaign.active || this.addJob.active) throw new Error("Stop the running campaign/add job before switching accounts");
-    if (this.switching) throw new Error("Already switching accounts — try again in a moment");
     const acc = this._getAccount(id);
     if (!acc) throw new Error("Account not found");
-    if (this.activeAccountId === id && this.isConnected) return;
-    this.switching = true;
-    try {
-      await this.disconnect();
-      const store = readAccountsStore();
-      store.activeId = id;
-      writeAccountsStore(store);
-      this.activeAccountId = id;
-      if (acc.session) await this.connectAccount(acc);
-    } finally {
-      this.switching = false;
+    this.activeAccountId = id;
+    const store = readAccountsStore();
+    store.activeId = id;
+    writeAccountsStore(store);
+    const s = this.getSession(id);
+    if (acc.session && (!s || !s.connected)) {
+      try { await this.connectAccount(acc); } catch (e: any) { console.log("[Bot] Connect failed:", e?.message); }
     }
   }
 
@@ -292,33 +369,41 @@ class TelegramBotEngine {
     await client.connect();
     const me: any = await client.getMe();
     if (!me) throw new Error("Session invalid — please log in again");
-    this.tgClient = client;
-    this.tgMe = me;
-    this.isConnected = true;
+    const s = this.getSession(acc.id, true)!;
+    s.client = client;
+    s.me = me;
+    s.connected = true;
+    s.loginState = "connected";
+    s.loginError = null;
+    s.handlerRegistered = false;
     acc.username = me.username || null;
     acc.phone = me.phone || null;
     acc.name = me.firstName || null;
     acc.session = client.session.save() as unknown as string;
     this._saveAccount(acc);
-    this.registerHandler();
+    this.registerHandler(s);
   }
 
+  // Reconnect EVERY logged-in account on boot so they all stay connected at once.
   private async init() {
-    const acc = this._getAccount(this.activeAccountId);
-    if (!acc) {
+    const store = readAccountsStore();
+    const linked = store.accounts.filter(a => a.session);
+    if (!linked.length) {
       console.log("[Bot] No Telegram account linked yet. Dashboard available.");
       return;
     }
-    if (!acc.session) {
-      console.log(`[Bot] Account "${acc.label}" has no session yet — awaiting login.`);
-      return;
-    }
-    try {
-      await this.connectAccount(acc);
-      console.log(`[Bot] ✅ Connected as @${this.tgMe?.username || this.tgMe?.firstName}`);
-    } catch (err: any) {
-      console.log("[Bot] ❌ Connection failed:", err.message);
-      this.tgClient = null; this.isConnected = false; this.tgMe = null;
+    // Sequential connects — safest for GramJS; each failure is isolated to its account.
+    for (const acc of linked) {
+      try {
+        await this.connectAccount(acc);
+        const s = this.getSession(acc.id);
+        console.log(`[Bot] ✅ Connected as @${s?.me?.username || s?.me?.firstName || acc.label}`);
+      } catch (err: any) {
+        console.log(`[Bot] ❌ Connection failed for "${acc.label}":`, err.message);
+        const s = this.getSession(acc.id, true)!;
+        s.client = null; s.connected = false; s.me = null;
+        s.loginState = "error"; s.loginError = err?.message || "Connection failed";
+      }
     }
   }
 
@@ -330,8 +415,6 @@ class TelegramBotEngine {
 
   async startLogin(phone: string, opts: { accountId?: string; createNew?: boolean; label?: string; apiId?: number | string; apiHash?: string } = {}) {
     await this._ready();
-    if (this.campaign.active || this.addJob.active) throw new Error("Stop the running campaign/add job before logging in");
-    if (this.pendingLoginAccountId) throw new Error("A login is already in progress");
 
     // Resolve which account this login targets — existing, explicitly-new, or
     // (legacy) the active one. The "Add account" flow always passes createNew so
@@ -350,24 +433,29 @@ class TelegramBotEngine {
     const { apiId, apiHash } = this.getCredsForAccount(acc);
     if (!apiId || !apiHash) throw new Error("Telegram API ID and API Hash required — add them for this account or set global keys in Settings");
 
-    // This login owns the connection — drop any currently-connected client first.
-    await this.disconnect();
-    this.pendingLoginAccountId = acc.id;
+    const s = this.getSession(acc.id, true)!;
+    if (s.loginState === "awaiting_code" || s.loginState === "awaiting_password") {
+      throw new Error("A login is already in progress for this account");
+    }
+    if (s.addJob.active || s.campaign.active) throw new Error("Stop this account's running campaign/add job before logging in");
+
+    // Drop ONLY this account's existing client (re-login). Other accounts stay connected.
+    await this.disconnect(acc.id);
     this.activeAccountId = acc.id;
-    this.loginState = "awaiting_code";
-    this.loginError = null;
+    s.loginState = "awaiting_code";
+    s.loginError = null;
     const store = readAccountsStore();
     store.activeId = acc.id;
     writeAccountsStore(store);
 
     const session = new StringSession("");
     const client = new TelegramClient(session, apiId, apiHash, { connectionRetries: 3 });
-    this.tgClient = client;
+    s.client = client;
     const accId = acc.id;
     client.start({
       phoneNumber: async () => phone,
-      phoneCode: async () => new Promise<string>((resolve) => { this.pending.phoneCode = resolve; }),
-      password: async () => new Promise<string>((resolve) => { this.loginState = "awaiting_password"; this.pending.password = resolve; }),
+      phoneCode: async () => new Promise<string>((resolve) => { s.pending.phoneCode = resolve; }),
+      password: async () => new Promise<string>((resolve) => { s.loginState = "awaiting_password"; s.pending.password = resolve; }),
       onError: (err: any) => console.log("[Bot] Login error:", err.message)
     }).then(async () => {
       const sessionStr = client.session.save() as unknown as string;
@@ -380,48 +468,62 @@ class TelegramBotEngine {
         saved.name = me?.firstName || null;
         this._saveAccount(saved);
       }
-      this.tgMe = me;
-      this.isConnected = true;
-      this.pendingLoginAccountId = null;
-      this.loginState = "connected";
-      console.log(`[Bot] ✅ Logged in as @${this.tgMe?.username}`);
-      this.registerHandler();
+      s.me = me;
+      s.connected = true;
+      s.loginState = "connected";
+      s.loginError = null;
+      s.pending.phoneCode = null;
+      s.pending.password = null;
+      s.handlerRegistered = false;
+      console.log(`[Bot] ✅ Logged in as @${me?.username}`);
+      this.registerHandler(s);
     }).catch((err: any) => {
       console.log("[Bot] Login failed:", err.message);
-      this.pending.phoneCode = null;
-      this.pending.password = null;
-      this.pendingLoginAccountId = null;
-      this.loginState = "error";
-      this.loginError = err?.message || "Login failed";
+      s.pending.phoneCode = null;
+      s.pending.password = null;
+      s.connected = false;
+      s.client = null;
+      s.loginState = "error";
+      s.loginError = err?.message || "Login failed";
     });
+
+    return acc.id;
   }
 
-  submitCode(code: string) {
-    if (!this.pending.phoneCode) throw new Error("No pending phone code request");
-    this.pending.phoneCode(code);
-    this.pending.phoneCode = null;
+  submitCode(code: string, accountId?: string) {
+    const s = this.loginSession(accountId);
+    if (!s.pending.phoneCode) throw new Error("No pending phone code request");
+    s.pending.phoneCode(code);
+    s.pending.phoneCode = null;
   }
 
-  submit2FA(password: string) {
-    if (!this.pending.password) throw new Error("No pending 2FA request");
-    this.pending.password(password);
-    this.pending.password = null;
+  submit2FA(password: string, accountId?: string) {
+    const s = this.loginSession(accountId);
+    if (!s.pending.password) throw new Error("No pending 2FA request");
+    s.pending.password(password);
+    s.pending.password = null;
   }
 
-  async disconnect() {
+  async disconnect(accountId?: string | null) {
     await this._ready();
-    if (this.tgClient) {
-      try { await this.tgClient.disconnect(); } catch {}
+    const id = this.resolveAccountId(accountId);
+    if (!id) return;
+    const s = this.sessions.get(id);
+    if (!s) return;
+    if (s.client) {
+      try { await s.client.disconnect(); } catch {}
     }
-    this.tgClient = null;
-    this.isConnected = false;
-    this.tgMe = null;
-    this.handlerClient = null;
+    s.client = null;
+    s.connected = false;
+    s.me = null;
+    s.handlerRegistered = false;
+    if (s.loginState === "connected") s.loginState = "idle";
   }
 
-  // Scrape members of a Telegram group/channel using the logged-in session.
-  async scrapeGroup(link: string, limit = 5000): Promise<{ username: string | null; phone: string | null; name: string; id: string }[]> {
-    if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram — log in first");
+  // Scrape members of a Telegram group/channel using a specific account's session.
+  async scrapeGroup(link: string, limit = 5000, accountId?: string): Promise<{ username: string | null; phone: string | null; name: string; id: string }[]> {
+    const s = this.requireConnectedSession(accountId);
+    const client = s.client!;
     if (!link || !link.trim()) throw new Error("Group link or username required");
 
     // Normalise input: accept https://t.me/xxx, t.me/xxx, @xxx, or xxx
@@ -435,14 +537,14 @@ class TelegramBotEngine {
 
     let entity: any;
     try {
-      entity = await this.tgClient.getEntity(target);
+      entity = await client.getEntity(target);
     } catch (e: any) {
       throw new Error(`Could not find that group: ${e?.errorMessage || e?.message || "unknown error"}`);
     }
 
     let participants: any[] = [];
     try {
-      participants = await this.tgClient.getParticipants(entity, { limit }) as any[];
+      participants = await client.getParticipants(entity, { limit }) as any[];
     } catch (e: any) {
       const msg = e?.errorMessage || e?.message || "";
       if (msg.includes("CHAT_ADMIN_REQUIRED") || msg.includes("ADMIN")) {
@@ -474,10 +576,12 @@ class TelegramBotEngine {
     targetGroup: string,
     sourceGroups: string[],
     limit: number,
-    preloadedMembers?: Array<{ username: string | null; phone: string | null; name: string; id: string }>
+    preloadedMembers?: Array<{ username: string | null; phone: string | null; name: string; id: string }>,
+    accountId?: string
   ) {
-    if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram — log in first");
-    if (this.addJob.active) throw new Error("An add job is already running — stop it first");
+    const s = this.requireConnectedSession(accountId);
+    const client = s.client!;
+    if (s.addJob.active) throw new Error("An add job is already running on this account — stop it first");
 
     const normalizedTarget = this._normalizeGroupLink(targetGroup);
     if (/^(joinchat\/|\+)/i.test(normalizedTarget)) {
@@ -486,19 +590,20 @@ class TelegramBotEngine {
 
     let targetEntity: any;
     try {
-      targetEntity = await this.tgClient.getEntity(normalizedTarget);
+      targetEntity = await client.getEntity(normalizedTarget);
     } catch (e: any) {
       throw new Error(`Could not find target group/channel: ${e?.errorMessage || e?.message || "unknown"}`);
     }
 
     // Initialise job in scrape phase
-    this.addJob = {
+    s.addJob = {
       active: true, total: 0, added: 0, failed: 0, privacy: 0, index: 0,
       members: [], targetEntity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
       scrapePhase: sourceGroups.length > 0, currentSource: sourceGroups[0] || null,
       sourcesTotal: sourceGroups.length, sourcesDone: 0,
       noCooldown: false, peerFloodStop: false, fatalStop: false,
     };
+    const job = s.addJob;
 
     // Scrape each source group sequentially, then kick off the add loop
     (async () => {
@@ -518,44 +623,45 @@ class TelegramBotEngine {
       }
 
       for (let si = 0; si < sourceGroups.length; si++) {
-        if (!this.addJob.active) break; // stopped by user
+        if (!job.active) break; // stopped by user
         const src = sourceGroups[si];
-        this.addJob.currentSource = src;
-        this.addJob.sourcesDone = si;
-        this.addJob.log.push({ status: "scraping", msg: `🔍 Scraping ${src} (${si + 1}/${sourceGroups.length})…`, at: Date.now() });
+        job.currentSource = src;
+        job.sourcesDone = si;
+        job.log.push({ status: "scraping", msg: `🔍 Scraping ${src} (${si + 1}/${sourceGroups.length})…`, at: Date.now() });
 
         try {
-          const scraped = await this.scrapeGroup(src, limit);
+          const scraped = await this.scrapeGroup(src, limit, s.accountId);
           for (const m of scraped) dedupAdd(m);
-          this.addJob.log.push({ status: "scraped", msg: `✅ ${src} — ${scraped.length} found, ${allMembers.length} unique so far`, at: Date.now() });
+          job.log.push({ status: "scraped", msg: `✅ ${src} — ${scraped.length} found, ${allMembers.length} unique so far`, at: Date.now() });
         } catch (e: any) {
-          this.addJob.log.push({ status: "failed", msg: `❌ Failed to scrape ${src}: ${e.message}`, at: Date.now() });
+          job.log.push({ status: "failed", msg: `❌ Failed to scrape ${src}: ${e.message}`, at: Date.now() });
         }
-        this.addJob.sourcesDone = si + 1;
+        job.sourcesDone = si + 1;
       }
 
-      if (!this.addJob.active) return; // stopped mid-scrape
+      if (!job.active) return; // stopped mid-scrape
 
       if (!allMembers.length) {
-        this.addJob.active = false;
-        this.addJob.scrapePhase = false;
-        this.addJob.log.push({ status: "done", msg: "⚠️ No members found across all source groups.", at: Date.now() });
+        job.active = false;
+        job.scrapePhase = false;
+        job.log.push({ status: "done", msg: "⚠️ No members found across all source groups.", at: Date.now() });
         return;
       }
 
       // Transition to add phase
-      this.addJob.scrapePhase = false;
-      this.addJob.currentSource = null;
-      this.addJob.members = allMembers;
-      this.addJob.total = allMembers.length;
-      this.addJob.log.push({ status: "info", msg: `🚀 Starting add job for ${allMembers.length} unique members…`, at: Date.now() });
-      this._addNext();
+      job.scrapePhase = false;
+      job.currentSource = null;
+      job.members = allMembers;
+      job.total = allMembers.length;
+      job.log.push({ status: "info", msg: `🚀 Starting add job for ${allMembers.length} unique members…`, at: Date.now() });
+      this._addNext(s);
     })();
   }
 
-  async startAddJob(targetGroup: string, members: Array<{ username: string | null; phone: string | null; name: string; id: string }>, options: { noCooldown?: boolean } = {}) {
-    if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram — log in first");
-    if (this.addJob.active) throw new Error("An add job is already running — stop it first");
+  async startAddJob(targetGroup: string, members: Array<{ username: string | null; phone: string | null; name: string; id: string }>, options: { noCooldown?: boolean } = {}, accountId?: string) {
+    const s = this.requireConnectedSession(accountId);
+    const client = s.client!;
+    if (s.addJob.active) throw new Error("An add job is already running on this account — stop it first");
     if (!members.length) throw new Error("No members provided");
 
     const normalized = this._normalizeGroupLink(targetGroup);
@@ -565,37 +671,40 @@ class TelegramBotEngine {
 
     let targetEntity: any;
     try {
-      targetEntity = await this.tgClient.getEntity(normalized);
+      targetEntity = await client.getEntity(normalized);
     } catch (e: any) {
       throw new Error(`Could not find target group/channel: ${e?.errorMessage || e?.message || "unknown"}`);
     }
 
-    this.addJob = {
+    s.addJob = {
       active: true, total: members.length, added: 0, failed: 0, privacy: 0, index: 0,
       members, targetEntity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
       noCooldown: options.noCooldown !== false, peerFloodStop: false, fatalStop: false,
       scrapePhase: false, currentSource: null, sourcesTotal: 0, sourcesDone: 0,
     };
-    this._addNext();
+    this._addNext(s);
   }
 
-  private _addNext() {
-    if (!this.addJob.active) return;
-    const { members, index, targetEntity } = this.addJob;
+  private _addNext(s: AccountSession) {
+    const job = s.addJob;
+    if (!job.active) return;
+    const client = s.client;
+    if (!client) { job.active = false; return; }
+    const { members, index, targetEntity } = job;
 
     if (index >= members.length) {
-      this.addJob.active = false;
-      this.addJob.log.push({ status: "done", msg: `✅ Finished. Added: ${this.addJob.added}, Privacy restricted: ${this.addJob.privacy}, Failed: ${this.addJob.failed}`, at: Date.now() });
+      job.active = false;
+      job.log.push({ status: "done", msg: `✅ Finished. Added: ${job.added}, Privacy restricted: ${job.privacy}, Failed: ${job.failed}`, at: Date.now() });
       return;
     }
 
     const member = members[index];
-    this.addJob.index++;
+    job.index++;
 
     (async () => {
       const logEntry: any = { name: member.name, username: member.username, id: member.id, status: "pending", at: Date.now() };
-      this.addJob.log.push(logEntry);
-      if (this.addJob.log.length > 300) this.addJob.log = this.addJob.log.slice(-300);
+      job.log.push(logEntry);
+      if (job.log.length > 300) job.log = job.log.slice(-300);
 
       try {
         const { Api } = await import("telegram");
@@ -606,14 +715,14 @@ class TelegramBotEngine {
         if (member.username || member.id) {
           const identifier: any = member.username ? member.username : BigInt(member.id!);
           try {
-            userEntity = await this.tgClient!.getEntity(identifier);
+            userEntity = await client.getEntity(identifier);
           } catch { /* fall through to phone */ }
         }
 
         if (!userEntity && member.phone) {
           // Phone fallback: import as contact temporarily to get the TG user entity
           try {
-            const result: any = await this.tgClient!.invoke(new Api.contacts.ImportContacts({
+            const result: any = await client.invoke(new Api.contacts.ImportContacts({
               contacts: [new (Api.InputPhoneContact as any)({
                 clientId: BigInt(Math.floor(Math.random() * 1000000000)) as any,
                 phone: member.phone.replace(/[^\d+]/g, ""),
@@ -629,19 +738,19 @@ class TelegramBotEngine {
           logEntry.status = "skipped";
           logEntry.error = "Cannot resolve user — no username, ID, or registered phone";
           logEntry.at = Date.now();
-          this.addJob.failed++;
-          this.addJob.timer = setTimeout(() => this._addNext(), this.addJob.noCooldown ? 0 : 500);
+          job.failed++;
+          job.timer = setTimeout(() => this._addNext(s), job.noCooldown ? 0 : 500);
           return;
         }
 
         const isChannel = targetEntity.className === "Channel";
         if (isChannel) {
-          await this.tgClient!.invoke(new Api.channels.InviteToChannel({
+          await client.invoke(new Api.channels.InviteToChannel({
             channel: targetEntity,
             users: [userEntity],
           }));
         } else {
-          await this.tgClient!.invoke(new Api.messages.AddChatUser({
+          await client.invoke(new Api.messages.AddChatUser({
             chatId: targetEntity.id,
             userId: userEntity,
             fwdLimit: 50,
@@ -650,37 +759,37 @@ class TelegramBotEngine {
 
         logEntry.status = "added";
         logEntry.at = Date.now();
-        this.addJob.added++;
+        job.added++;
       } catch (e: any) {
         const msg = e?.errorMessage || e?.message || "";
         if (msg.includes("FLOOD_WAIT") || e?.seconds) {
           const waitSec = e.seconds || 60;
           console.log(`[AddJob] Flood wait ${waitSec}s`);
-          this.addJob.floodWait = waitSec;
-          this.addJob.index--;
+          job.floodWait = waitSec;
+          job.index--;
           logEntry.status = "flood_wait";
           logEntry.error = `Flood wait ${waitSec}s`;
           logEntry.at = Date.now();
-          this.addJob.log.pop();
-          this.addJob.timer = setTimeout(() => {
-            this.addJob.floodWait = 0;
-            this._addNext();
+          job.log.pop();
+          job.timer = setTimeout(() => {
+            job.floodWait = 0;
+            this._addNext(s);
           }, waitSec * 1000 + 2000);
           return;
         }
         if (msg.includes("USER_PRIVACY_RESTRICTED") || msg.includes("PRIVACY_RESTRICTED")) {
           logEntry.status = "privacy";
           logEntry.error = "Privacy restricted";
-          this.addJob.privacy++;
+          job.privacy++;
         } else if (msg.includes("USER_ALREADY_PARTICIPANT") || msg.includes("ALREADY_PARTICIPANT")) {
           logEntry.status = "already";
           logEntry.error = "Already a member";
-          this.addJob.added++;
+          job.added++;
         } else if (msg.includes("PEER_FLOOD")) {
           logEntry.status = "failed";
           logEntry.error = "PEER_FLOOD — account limited";
-          this.addJob.failed++;
-          this.addJob.peerFloodStop = true;
+          job.failed++;
+          job.peerFloodStop = true;
         } else if (
           msg.includes("CHAT_WRITE_FORBIDDEN") ||
           msg.includes("CHAT_ADMIN_REQUIRED") ||
@@ -692,44 +801,45 @@ class TelegramBotEngine {
           // burn through the whole list — stop the job and explain why.
           logEntry.status = "failed";
           logEntry.error = "No permission to add to this group";
-          this.addJob.failed++;
-          this.addJob.fatalStop = true;
+          job.failed++;
+          job.fatalStop = true;
         } else if (msg.includes("USER_BOT")) {
           logEntry.status = "skipped";
           logEntry.error = "User is a bot";
-          this.addJob.failed++;
+          job.failed++;
         } else {
           logEntry.status = "failed";
           logEntry.error = msg.slice(0, 80);
-          this.addJob.failed++;
+          job.failed++;
         }
         logEntry.at = Date.now();
       }
 
       // Stop immediately if the account can't add to this target at all — the
       // error affects every member, so there's no point retrying the whole list.
-      if (this.addJob.fatalStop) {
-        this.addJob.active = false;
-        this.addJob.log.push({ status: "stopped", msg: `⛔ Stopped: this account can't add members to the target group/channel. The connected Telegram account must be a member AND an admin there with "Add members" permission. (Telegram may also temporarily block adding if the account was recently rate-limited.) Added: ${this.addJob.added}.`, at: Date.now() });
+      if (job.fatalStop) {
+        job.active = false;
+        job.log.push({ status: "stopped", msg: `⛔ Stopped: this account can't add members to the target group/channel. The connected Telegram account must be a member AND an admin there with "Add members" permission. (Telegram may also temporarily block adding if the account was recently rate-limited.) Added: ${job.added}.`, at: Date.now() });
         return;
       }
       // Stop immediately if Telegram flagged the account (PEER_FLOOD) — hammering risks a ban.
-      if (this.addJob.peerFloodStop) {
-        this.addJob.active = false;
-        this.addJob.log.push({ status: "stopped", msg: `⛔ Stopped: Telegram limited this account (PEER_FLOOD). Added: ${this.addJob.added}. Wait a while or switch to another account.`, at: Date.now() });
+      if (job.peerFloodStop) {
+        job.active = false;
+        job.log.push({ status: "stopped", msg: `⛔ Stopped: Telegram limited this account (PEER_FLOOD). Added: ${job.added}. Wait a while or switch to another account.`, at: Date.now() });
         return;
       }
       // Turbo mode: no artificial countdown (tiny ~130–250ms floor only). FLOOD_WAIT still pauses.
-      const delay = this.addJob.noCooldown
+      const delay = job.noCooldown
         ? Math.floor(Math.random() * 120) + 130
         : Math.floor(Math.random() * 3000) + 2000;
-      this.addJob.timer = setTimeout(() => this._addNext(), delay);
+      job.timer = setTimeout(() => this._addNext(s), delay);
     })();
   }
 
-  getAddStatus() {
-    const j = this.addJob;
-    if (!j.active && !j.log?.length) return { active: false };
+  getAddStatus(accountId?: string) {
+    const id = this.resolveAccountId(accountId);
+    const j = id ? this.sessions.get(id)?.addJob : null;
+    if (!j || (!j.active && !j.log?.length)) return { active: false };
     return {
       active: j.active,
       total: j.total,
@@ -749,18 +859,23 @@ class TelegramBotEngine {
     };
   }
 
-  stopAddJob() {
-    if (!this.addJob.active) return;
-    clearTimeout(this.addJob.timer);
-    this.addJob.active = false;
-    this.addJob.log.push({ status: "stopped", msg: `⏹ Stopped. Added: ${this.addJob.added}`, at: Date.now() });
+  stopAddJob(accountId?: string) {
+    const id = this.resolveAccountId(accountId);
+    const job = id ? this.sessions.get(id)?.addJob : null;
+    if (!job || !job.active) return;
+    clearTimeout(job.timer);
+    job.active = false;
+    job.log.push({ status: "stopped", msg: `⏹ Stopped. Added: ${job.added}`, at: Date.now() });
   }
 
-  getStatus() {
-    const cs = this.getCampaignStatus();
+  // Flat fields reflect the default-view account for legacy callers; `accounts[]`
+  // carries the full per-account picture for the multi-account UI.
+  getStatus(accountId?: string) {
+    const id = this.resolveAccountId(accountId);
+    const s = id ? this.sessions.get(id) : null;
     return {
-      connected: this.isConnected,
-      me: this.tgMe ? { username: this.tgMe.username, phone: this.tgMe.phone, name: this.tgMe.firstName } : null,
+      connected: !!s?.connected,
+      me: s?.me ? { username: s.me.username, phone: s.me.phone, name: s.me.firstName } : null,
       uptime: Math.floor((Date.now() - this.startTime) / 1000),
       messages: this.messageCount,
       aiEnabled: this.settings.aiEnabled,
@@ -769,69 +884,76 @@ class TelegramBotEngine {
       hasSmsKey: !!(this.settings.smsApiKey || process.env.SMS_API_KEY || process.env.TWILIO_ACCOUNT_SID || process.env.TERMII_API_KEY),
       hasTgCreds: this.hasTgCreds(),
       activeAccountId: this.activeAccountId,
-      loginState: this.loginState,
-      loginError: this.loginError,
-      pendingLogin: !!this.pendingLoginAccountId,
-      campaign: cs,
-      smsCampaign: null
+      loginState: s?.loginState ?? "idle",
+      loginError: s?.loginError ?? null,
+      pendingLogin: !!(s && (s.pending.phoneCode || s.pending.password)),
+      campaign: this.getCampaignStatus(id ?? undefined),
+      smsCampaign: null,
+      accounts: this._serializeAccounts(),
     };
   }
 
-  getCampaignStatus() {
-    if (!this.campaign.active && !this.campaign.log?.length) return { active: false };
-    const total = this.campaign.contacts.length;
-    const done = this.campaign.sent + this.campaign.failed + this.campaign.noTelegram;
-    const opts = this.campaign.options || {};
+  getCampaignStatus(accountId?: string) {
+    const id = this.resolveAccountId(accountId);
+    const cmp = id ? this.sessions.get(id)?.campaign : null;
+    if (!cmp || (!cmp.active && !cmp.log?.length)) return { active: false };
+    const total = cmp.contacts.length;
+    const done = cmp.sent + cmp.failed + cmp.noTelegram;
+    const opts = cmp.options || {};
     const avgDelay = ((opts.minDelay || 3) + (opts.maxDelay || 8)) / 2;
     return {
-      active: this.campaign.active,
+      active: cmp.active,
       total,
-      sent: this.campaign.sent,
-      failed: this.campaign.failed,
-      noTelegram: this.campaign.noTelegram,
-      skipped: this.campaign.skipped || 0,
-      elapsed: this.campaign.startTime ? Math.round((Date.now() - this.campaign.startTime) / 60000) : 0,
+      sent: cmp.sent,
+      failed: cmp.failed,
+      noTelegram: cmp.noTelegram,
+      skipped: cmp.skipped || 0,
+      elapsed: cmp.startTime ? Math.round((Date.now() - cmp.startTime) / 60000) : 0,
       remain: total > done ? Math.ceil((total - done) * avgDelay / 60) : 0,
       percent: total > 0 ? Math.round(done / total * 100) : 0,
-      floodWait: this.campaign.floodWait || 0,
-      log: (this.campaign.log || []).slice(-200)
+      floodWait: cmp.floodWait || 0,
+      log: (cmp.log || []).slice(-200)
     };
   }
 
-  stopCampaign() {
-    if (!this.campaign.active) return;
-    clearTimeout(this.campaign.timer);
-    this.campaign.active = false;
-    this._saveHistory();
+  stopCampaign(accountId?: string) {
+    const id = this.resolveAccountId(accountId);
+    const s = id ? this.sessions.get(id) : null;
+    if (!s || !s.campaign.active) return;
+    clearTimeout(s.campaign.timer);
+    s.campaign.active = false;
+    this._saveHistory(s);
   }
 
-  private _saveHistory() {
-    if (!this.campaign.startTime || !this.campaign.contacts.length) return;
+  private _saveHistory(s: AccountSession) {
+    const cmp = s.campaign;
+    if (!cmp.startTime || !cmp.contacts.length) return;
     try {
       const histDir = path.join(DATA_DIR, "campaign-history");
       if (!fs.existsSync(histDir)) fs.mkdirSync(histDir, { recursive: true });
-      const id = this.campaign.startTime.toString();
+      const id = cmp.startTime.toString();
       fs.writeFileSync(
         path.join(histDir, `${id}.json`),
         JSON.stringify({
           id,
-          startTime: this.campaign.startTime,
+          accountId: s.accountId,
+          startTime: cmp.startTime,
           endTime: Date.now(),
-          total: this.campaign.contacts.length,
-          sent: this.campaign.sent,
-          failed: this.campaign.failed,
-          noTelegram: this.campaign.noTelegram,
-          skipped: this.campaign.skipped || 0,
-          message: (this.campaign.message || "").slice(0, 120),
-          log: this.campaign.log || []
+          total: cmp.contacts.length,
+          sent: cmp.sent,
+          failed: cmp.failed,
+          noTelegram: cmp.noTelegram,
+          skipped: cmp.skipped || 0,
+          message: (cmp.message || "").slice(0, 120),
+          log: cmp.log || []
         }, null, 2)
       );
     } catch {}
   }
 
-  async startCampaignFromAPI(contacts: any[], message: string, options: any = {}) {
-    if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram");
-    if (this.campaign.active) throw new Error("A campaign is already running");
+  async startCampaignFromAPI(contacts: any[], message: string, options: any = {}, accountId?: string) {
+    const s = this.requireConnectedSession(accountId);
+    if (s.campaign.active) throw new Error("A campaign is already running on this account");
     if (!contacts.length) throw new Error("No contacts");
     const noCooldown = !!options.noCooldown;
     const opts = {
@@ -846,7 +968,7 @@ class TelegramBotEngine {
     };
     const bl: string[] = readJSON("blacklist.json", []);
     this.blacklist = new Set(bl.map((p: string) => p.replace(/\s/g, "")));
-    this.campaign = {
+    s.campaign = {
       active: true, contacts, index: 0, message, sent: 0, failed: 0, noTelegram: 0, skipped: 0,
       startTime: Date.now(), timer: null,
       onUpdate: (t: string) => console.log("[Campaign]", t),
@@ -854,33 +976,36 @@ class TelegramBotEngine {
       log: [], batchCount: 0, floodWait: 0, options: opts,
       dailySent: 0
     };
-    this._campaignNext();
+    this._campaignNext(s);
   }
 
-  private _campaignNext() {
-    if (!this.campaign.active) return;
-    const { contacts, index, message, onUpdate, options } = this.campaign;
+  private _campaignNext(s: AccountSession) {
+    const cmp = s.campaign;
+    if (!cmp.active) return;
+    const client = s.client;
+    if (!client) { cmp.active = false; return; }
+    const { contacts, index, message, onUpdate, options } = cmp;
     if (index >= contacts.length) {
-      this.campaign.active = false;
-      this._saveHistory();
-      onUpdate?.(`✅ Complete! Sent: ${this.campaign.sent}, No TG: ${this.campaign.noTelegram}, Failed: ${this.campaign.failed}`);
+      cmp.active = false;
+      this._saveHistory(s);
+      onUpdate?.(`✅ Complete! Sent: ${cmp.sent}, No TG: ${cmp.noTelegram}, Failed: ${cmp.failed}`);
       return;
     }
-    if (options.dailyLimit > 0 && this.campaign.dailySent >= options.dailyLimit) {
-      this.campaign.active = false;
-      this._saveHistory();
+    if (options.dailyLimit > 0 && cmp.dailySent >= options.dailyLimit) {
+      cmp.active = false;
+      this._saveHistory(s);
       onUpdate?.(`⏹ Daily limit reached (${options.dailyLimit})`);
       return;
     }
     const { phone, name } = contacts[index];
-    this.campaign.index++;
+    cmp.index++;
 
     // Skip blacklisted numbers
     const normPhone = phone.replace(/\s/g, "");
     if (this.blacklist.has(normPhone) || this.blacklist.has(phone)) {
-      this.campaign.skipped++;
-      this.campaign.log.push({ phone, name, status: "skipped", at: Date.now(), error: "blacklisted" });
-      this.campaign.timer = setTimeout(() => this._campaignNext(), 50);
+      cmp.skipped++;
+      cmp.log.push({ phone, name, status: "skipped", at: Date.now(), error: "blacklisted" });
+      cmp.timer = setTimeout(() => this._campaignNext(s), 50);
       return;
     }
 
@@ -892,8 +1017,8 @@ class TelegramBotEngine {
       const maxMs = Math.max((options.maxDelay || 0) * 1000, minMs);
       const randomDelay = maxMs > minMs ? Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs : minMs;
       const logEntry: any = { phone, name, status: "pending", at: Date.now() };
-      this.campaign.log.push(logEntry);
-      if (this.campaign.log.length > 500) this.campaign.log = this.campaign.log.slice(-500);
+      cmp.log.push(logEntry);
+      if (cmp.log.length > 500) cmp.log = cmp.log.slice(-500);
 
       try {
         const { Api } = await import("telegram");
@@ -902,14 +1027,14 @@ class TelegramBotEngine {
           // Username contact (e.g. scraped from a group where phone is hidden) — resolve directly.
           const uname = phone.trim().replace(/^@/, "");
           try {
-            user = await this.tgClient!.getEntity(uname);
+            user = await client.getEntity(uname);
           } catch {
             user = null;
           }
         } else {
           const cleanPhone = phone.replace(/\D/g, "").replace(/^0+/, "");
           const normalised = cleanPhone.startsWith("+") ? cleanPhone : "+" + cleanPhone;
-          const imported: any = await this.tgClient!.invoke(
+          const imported: any = await client.invoke(
             new Api.contacts.ImportContacts({
               contacts: [new Api.InputPhoneContact({
                 clientId: BigInt(index) as any,
@@ -924,17 +1049,17 @@ class TelegramBotEngine {
         if (user) {
           if (options.typingDelay) {
             try {
-              await this.tgClient!.invoke(new Api.messages.SetTyping({ peer: user, action: new Api.SendMessageTypingAction() }));
+              await client.invoke(new Api.messages.SetTyping({ peer: user, action: new Api.SendMessageTypingAction() }));
               await new Promise(r => setTimeout(r, Math.floor(Math.random() * 2000) + 1000));
             } catch {}
           }
-          await this.tgClient!.sendMessage(user, { message: personalised });
-          this.campaign.sent++;
-          this.campaign.dailySent++;
+          await client.sendMessage(user, { message: personalised });
+          cmp.sent++;
+          cmp.dailySent++;
           logEntry.status = "sent";
           logEntry.at = Date.now();
         } else {
-          this.campaign.noTelegram++;
+          cmp.noTelegram++;
           logEntry.status = "no_telegram";
           logEntry.at = Date.now();
         }
@@ -943,36 +1068,36 @@ class TelegramBotEngine {
         if (errMsg.includes("FLOOD_WAIT") || e?.seconds) {
           const waitSec = e.seconds || 60;
           console.log(`[Campaign] Flood wait ${waitSec}s — pausing`);
-          this.campaign.floodWait = waitSec;
-          this.campaign.index--;
+          cmp.floodWait = waitSec;
+          cmp.index--;
           logEntry.status = "flood_wait";
           logEntry.error = `Flood wait ${waitSec}s`;
-          this.campaign.log.pop();
-          this.campaign.timer = setTimeout(() => {
-            this.campaign.floodWait = 0;
-            this._campaignNext();
+          cmp.log.pop();
+          cmp.timer = setTimeout(() => {
+            cmp.floodWait = 0;
+            this._campaignNext(s);
           }, waitSec * 1000 + 2000);
           return;
         }
-        this.campaign.failed++;
+        cmp.failed++;
         logEntry.status = "error";
         logEntry.error = errMsg.slice(0, 80);
         logEntry.at = Date.now();
         console.log(`[Campaign] Error → ${phone}: ${errMsg}`);
       }
 
-      this.campaign.batchCount++;
-      if (options.batchSize > 0 && this.campaign.batchCount >= options.batchSize) {
-        this.campaign.batchCount = 0;
+      cmp.batchCount++;
+      if (options.batchSize > 0 && cmp.batchCount >= options.batchSize) {
+        cmp.batchCount = 0;
         const pauseMs = (options.batchPauseMin || 0) * 60 * 1000;
         if (pauseMs > 0) {
           console.log(`[Campaign] Batch pause ${options.batchPauseMin}min`);
-          this.campaign.timer = setTimeout(() => this._campaignNext(), pauseMs);
+          cmp.timer = setTimeout(() => this._campaignNext(s), pauseMs);
         } else {
-          this.campaign.timer = setTimeout(() => this._campaignNext(), randomDelay);
+          cmp.timer = setTimeout(() => this._campaignNext(s), randomDelay);
         }
       } else {
-        this.campaign.timer = setTimeout(() => this._campaignNext(), randomDelay);
+        cmp.timer = setTimeout(() => this._campaignNext(s), randomDelay);
       }
     })();
   }
@@ -1019,9 +1144,11 @@ class TelegramBotEngine {
     return this.scamAlerts.slice(0, 50);
   }
 
-  private isOwner(senderId: string) {
-    if (!this.tgMe) return false;
-    return senderId === this.tgMe.id?.toString() || (this.settings.owners || []).includes(senderId);
+  private isOwner(senderId: string, accountId?: string) {
+    const id = this.resolveAccountId(accountId);
+    const me = id ? this.sessions.get(id)?.me : null;
+    if (!me) return (this.settings.owners || []).includes(senderId);
+    return senderId === me.id?.toString() || (this.settings.owners || []).includes(senderId);
   }
 
   private moodPrompt() {
@@ -1066,10 +1193,10 @@ class TelegramBotEngine {
     } catch { return null; }
   }
 
-  private async mirrorAI(text: string, chatId: string): Promise<string | null> {
+  private async mirrorAI(text: string, chatId: string, personaKey?: string): Promise<string | null> {
     const key = process.env.GROQ_API_KEY;
     if (!key) return null;
-    const persona = this.activePersona.get(chatId);
+    const persona = this.activePersona.get(personaKey || chatId);
     const sys = persona
       ? `You are roleplaying as ${persona}. Respond exactly how ${persona} would.`
       : this.settings.systemPrompt + this.moodPrompt();
@@ -1138,16 +1265,18 @@ class TelegramBotEngine {
     return contacts;
   }
 
-  private registerHandler() {
-    if (!this.tgClient) return;
-    if (this.handlerClient === this.tgClient) return;
-    this.tgClient.addEventHandler((event: any) => this.handleMessage(event), new NewMessage({}));
-    this.handlerClient = this.tgClient;
-    console.log("[Bot] Message handler registered.");
+  private registerHandler(s: AccountSession) {
+    if (!s.client) return;
+    if (s.handlerRegistered) return;
+    s.client.addEventHandler((event: any) => this.handleMessage(s.accountId, event), new NewMessage({}));
+    s.handlerRegistered = true;
+    console.log(`[Bot] Message handler registered for ${s.accountId}.`);
   }
 
-  private async handleMessage(event: any) {
+  private async handleMessage(accountId: string, event: any) {
     try {
+      const s = this.sessions.get(accountId);
+      const client = s?.client || event.client;
       const msg = event.message;
       const isFromMe = msg.out;
       const chat = await event.getChat().catch(() => null);
@@ -1155,9 +1284,12 @@ class TelegramBotEngine {
       const sender = msg.sender || (msg.fromId ? { id: msg.fromId } : null);
       const chatId = chat?.id?.toString();
       const senderId = sender?.id?.toString();
+      // Per-account conversation/AI state key — keeps two accounts talking to the
+      // same chat from clobbering each other's auto-reply/persona/takeover state.
+      const ck = `${accountId}:${chatId}`;
       const text = msg.text || msg.message || "";
       const isPrivate = chat?.className === "User";
-      const senderIsOwner = isFromMe || this.isOwner(senderId);
+      const senderIsOwner = isFromMe || this.isOwner(senderId, accountId);
       const pfx = this.settings.prefix;
       this.messageCount++;
       const send = async (t: string) => {
@@ -1165,12 +1297,12 @@ class TelegramBotEngine {
         catch { try { await event.reply(t); } catch {} }
       };
 
-      if (isFromMe && this.settings.autoTakeover && chatId) this.ownerTakeover.set(chatId, Date.now());
+      if (isFromMe && this.settings.autoTakeover && chatId) this.ownerTakeover.set(ck, Date.now());
 
       let transcribedText = "";
       if (!isFromMe && this.settings.transcribeVoice && msg.voice) {
         try {
-          const buf = await this.tgClient!.downloadMedia(msg, { outputFile: Buffer.alloc(0) });
+          const buf = await client!.downloadMedia(msg, { outputFile: Buffer.alloc(0) });
           if (buf && buf.length > 100) transcribedText = await this.transcribeAudio(buf as Buffer, "audio/ogg") || "";
         } catch {}
       }
@@ -1199,39 +1331,39 @@ class TelegramBotEngine {
         }
       }
 
-      if (!isFromMe && effectiveText && !effectiveText.startsWith(pfx) && isPrivate && this.answerSessions.has(chatId)) {
-        const ts = this.answerSessions.get(chatId)!;
+      if (!isFromMe && effectiveText && !effectiveText.startsWith(pfx) && isPrivate && this.answerSessions.has(ck)) {
+        const ts = this.answerSessions.get(ck)!;
         if (Date.now() - ts < 5 * 60 * 1000) {
-          this.answerSessions.set(chatId, Date.now());
+          this.answerSessions.set(ck, Date.now());
           const reply = await this.askGroq(effectiveText, chatId, { system: "You are a helpful AI assistant on Telegram." });
           if (reply) await send(reply);
           return;
-        } else this.answerSessions.delete(chatId);
+        } else this.answerSessions.delete(ck);
       }
 
       if (effectiveText.startsWith(pfx)) {
-        if (!senderIsOwner && !this.checkRateLimit(senderId)) return;
+        if (!senderIsOwner && !this.checkRateLimit(`${accountId}:${senderId}`)) return;
         const [rawCmd, ...args] = effectiveText.slice(pfx.length).trim().split(/\s+/);
         const cmd = rawCmd.toLowerCase();
 
         if (cmd === "campaign" || cmd === "blast" || cmd === "bulk") {
           if (!senderIsOwner) { await send("❌ Owner only."); return; }
           const sub = (args[0] || "").toLowerCase();
-          if (sub === "stop") { this.stopCampaign(); await send("⏹ Campaign stopped."); return; }
+          if (sub === "stop") { this.stopCampaign(accountId); await send("⏹ Campaign stopped."); return; }
           if (sub === "status") {
-            const cs = this.getCampaignStatus() as any;
+            const cs = this.getCampaignStatus(accountId) as any;
             if (!cs?.active) { await send("ℹ️ No campaign running."); return; }
             await send(`📊 *Campaign Progress*\n\n✔️ Sent: ${cs.sent}/${cs.total} (${cs.percent}%)\n❌ Failed: ${cs.failed}`);
             return;
           }
           if (msg.document) {
             try {
-              const buf = await this.tgClient!.downloadMedia(msg, { outputFile: Buffer.alloc(0) });
+              const buf = await client!.downloadMedia(msg, { outputFile: Buffer.alloc(0) });
               const vcfText = (buf as Buffer).toString("utf8");
               const contacts = this.parseVCF(vcfText);
               if (!contacts.length) { await send("❌ No valid contacts in that VCF."); return; }
               const campaignMsg = msg.message?.split("\n").slice(1).join("\n").trim() || "Hey {name}!";
-              await this.startCampaignFromAPI(contacts, campaignMsg);
+              await this.startCampaignFromAPI(contacts, campaignMsg, {}, accountId);
             } catch (e: any) { await send("❌ Could not read VCF: " + e.message); }
             return;
           }
@@ -1250,7 +1382,7 @@ class TelegramBotEngine {
             const question = args.join(" ").trim();
             if (!question) { await send("💬 *.ai <question>* — ask me anything."); return; }
             const reply = await this.askGroq(question, chatId);
-            if (reply) { this.answerSessions.set(chatId, Date.now()); await send(`🤖 ${reply}\n\n_Reply to continue_`); }
+            if (reply) { this.answerSessions.set(ck, Date.now()); await send(`🤖 ${reply}\n\n_Reply to continue_`); }
             else await send("❌ AI unavailable."); return;
           }
           const sub = (args[0] || "").toLowerCase();
@@ -1268,8 +1400,8 @@ class TelegramBotEngine {
         if (cmd === "persona") {
           const name = args.join(" ").trim();
           if (!name) { await send("🎭 .persona <name> — roleplay as anyone\n.persona off — back to normal"); return; }
-          if (name.toLowerCase() === "off") { this.activePersona.delete(chatId); await send("🎭 Persona off."); return; }
-          this.activePersona.set(chatId, name);
+          if (name.toLowerCase() === "off") { this.activePersona.delete(ck); await send("🎭 Persona off."); return; }
+          this.activePersona.set(ck, name);
           await send(`🎭 Persona: *${name}* activated.`); return;
         }
 
@@ -1277,7 +1409,7 @@ class TelegramBotEngine {
           const question = args.join(" ").trim();
           if (!question) { await send(".answer <question>"); return; }
           const reply = await this.askGroq(question, chatId);
-          if (reply) { this.answerSessions.set(chatId, Date.now()); await send(`🤖 ${reply}\n\n_Reply to continue_`); }
+          if (reply) { this.answerSessions.set(ck, Date.now()); await send(`🤖 ${reply}\n\n_Reply to continue_`); }
           else await send("❌ AI unavailable."); return;
         }
 
@@ -1390,7 +1522,7 @@ class TelegramBotEngine {
 
         if (cmd === "status" || cmd === "ping") {
           const u = Math.floor((Date.now()-this.startTime)/1000);
-          await send(`📱 *MFG Bot Status*\n\nConnection: ${this.isConnected?"🟢 Connected":"🔴 Disconnected"}\nUptime: ${Math.floor(u/3600)}h ${Math.floor((u%3600)/60)}m\nMessages: ${this.messageCount}\nAI: ${this.settings.aiEnabled?"🟢 ON":"🔴 OFF"}`);
+          await send(`📱 *MFG Bot Status*\n\nConnection: ${s?.connected?"🟢 Connected":"🔴 Disconnected"}\nUptime: ${Math.floor(u/3600)}h ${Math.floor((u%3600)/60)}m\nMessages: ${this.messageCount}\nAI: ${this.settings.aiEnabled?"🟢 ON":"🔴 OFF"}`);
           return;
         }
 
@@ -1410,7 +1542,7 @@ class TelegramBotEngine {
         }
 
         if (this.settings.aiEnabled && process.env.GROQ_API_KEY) {
-          const reply = await this.mirrorAI(effectiveText, chatId);
+          const reply = await this.mirrorAI(effectiveText, chatId, ck);
           if (reply) await send(reply);
         } else {
           await send(`Unknown command. Type ${pfx}menu for all commands.`);
@@ -1418,23 +1550,23 @@ class TelegramBotEngine {
         return;
       }
 
-      if (!isFromMe && isPrivate && this.settings.aiEnabled && !this.aiPaused.has(chatId) && !this.aiContactDisabled.has(chatId)) {
-        if (this.settings.autoTakeover && this.ownerTakeover.has(chatId)) {
-          const pauseUntil = this.ownerTakeover.get(chatId)! + (this.settings.takeoverMinutes * 60 * 1000);
+      if (!isFromMe && isPrivate && this.settings.aiEnabled && !this.aiPaused.has(ck) && !this.aiContactDisabled.has(ck)) {
+        if (this.settings.autoTakeover && this.ownerTakeover.has(ck)) {
+          const pauseUntil = this.ownerTakeover.get(ck)! + (this.settings.takeoverMinutes * 60 * 1000);
           if (Date.now() < pauseUntil) return;
-          else this.ownerTakeover.delete(chatId);
+          else this.ownerTakeover.delete(ck);
         }
         if (!effectiveText) return;
         if (this.settings.aiDisclaimer) {
           const today = new Date().toDateString();
-          if (this.disclaimerSent.get(chatId) !== today) {
-            this.disclaimerSent.set(chatId, today);
+          if (this.disclaimerSent.get(ck) !== today) {
+            this.disclaimerSent.set(ck, today);
             try { await send(this.settings.disclaimerText); } catch {}
           }
         }
-        const reply = await this.mirrorAI(effectiveText, chatId);
+        const reply = await this.mirrorAI(effectiveText, chatId, ck);
         if (reply) {
-          if (reply.startsWith("[STOP]")) { this.aiPaused.set(chatId, Date.now()); return; }
+          if (reply.startsWith("[STOP]")) { this.aiPaused.set(ck, Date.now()); return; }
           if (this.settings.aiDelay > 0) await new Promise(r => setTimeout(r, this.settings.aiDelay * 1000));
           await send(reply);
         }

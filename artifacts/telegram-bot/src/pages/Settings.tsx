@@ -10,8 +10,8 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { apiGet, apiPost } from "@/lib/api";
-import { Bot, Shield, Mic, Eye, MessageCircle, Settings2, Zap, Save, Server, Plus, Trash2, Check, KeyRound } from "lucide-react";
+import { apiGet, apiPost, apiPatch } from "@/lib/api";
+import { Bot, Shield, Mic, Eye, MessageCircle, Settings2, Zap, Save, Server, Plus, Trash2, Check, KeyRound, AlertTriangle, UserCircle2 } from "lucide-react";
 
 function TelegramCredsCard() {
   const { toast } = useToast();
@@ -58,6 +58,74 @@ function TelegramCredsCard() {
         <Button size="sm" onClick={() => save.mutate()} disabled={!apiId.trim() || !apiHash.trim() || save.isPending}>
           {save.isPending ? "Saving…" : "Save API Keys"}
         </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AccountKeyRow({ acc, onSaved }: { acc: any; onSaved: () => void }) {
+  const { toast } = useToast();
+  const [apiId, setApiId] = useState("");
+  const [apiHash, setApiHash] = useState("");
+
+  const save = useMutation({
+    mutationFn: () => apiPatch(`/tg-accounts/${acc.id}`, { apiId: apiId.trim(), apiHash: apiHash.trim() }),
+    onSuccess: (res: any) => {
+      if (res.ok) {
+        setApiId(""); setApiHash("");
+        onSaved();
+        toast({ title: "Account API keys saved", description: `${acc.label} now uses its own keys` });
+      } else {
+        toast({ title: "Couldn't save", description: res.message, variant: "destructive" });
+      }
+    },
+    onError: (e: any) => toast({ title: "Failed", description: e?.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-md border border-border p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <UserCircle2 className="w-4 h-4 text-primary shrink-0" />
+        <p className="text-sm font-medium text-foreground truncate flex-1">{acc.label}</p>
+        <span className={`text-[11px] ${acc.hasOwnCreds ? "text-green-500" : "text-muted-foreground"}`}>
+          {acc.hasOwnCreds ? "Own keys" : "Shared keys"}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Input value={apiId} onChange={e => setApiId(e.target.value)} placeholder="API ID" className="font-mono h-8 text-sm" inputMode="numeric" />
+        <Input value={apiHash} onChange={e => setApiHash(e.target.value)} placeholder={acc.hasOwnCreds ? "•••• (keep)" : "API Hash"} className="font-mono h-8 text-sm" />
+      </div>
+      <Button size="sm" className="h-7 text-xs" onClick={() => save.mutate()} disabled={!apiId.trim() || !apiHash.trim() || save.isPending}>
+        {save.isPending ? "Saving…" : "Save keys"}
+      </Button>
+    </div>
+  );
+}
+
+function TgAccountKeysCard() {
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ["tg-accounts"], queryFn: () => apiGet("/tg-accounts"), refetchInterval: 5000 });
+  const accounts: any[] = (data as any)?.accounts || [];
+  const refresh = () => qc.invalidateQueries({ queryKey: ["tg-accounts"] });
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2"><KeyRound className="w-4 h-4" /> Per-Account API Keys</CardTitle>
+        <CardDescription>Give each Telegram account its own API ID/Hash (from my.telegram.org). Accounts without their own keys fall back to the shared keys above. Both fields are required to save; leave blank to keep current keys.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-start gap-2 p-2 rounded-md bg-yellow-500/10 border border-yellow-500/20">
+          <AlertTriangle className="w-3.5 h-3.5 text-yellow-500 shrink-0 mt-0.5" />
+          <p className="text-xs text-yellow-300/90">
+            <strong>Ban risk:</strong> running scrape/add or campaigns on several accounts at once multiplies Telegram's flood-wait and ban exposure. Use separate API keys per account and keep parallel jobs modest.
+          </p>
+        </div>
+        {accounts.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No accounts linked yet — add one on the Accounts page.</p>
+        ) : (
+          accounts.map(acc => <AccountKeyRow key={acc.id} acc={acc} onSaved={refresh} />)
+        )}
       </CardContent>
     </Card>
   );
@@ -211,6 +279,8 @@ export default function Settings() {
         <ApiServersCard />
 
         <TelegramCredsCard />
+
+        <TgAccountKeysCard />
 
         {/* Bot basics */}
         <Card>

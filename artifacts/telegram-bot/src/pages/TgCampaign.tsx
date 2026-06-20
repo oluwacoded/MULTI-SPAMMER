@@ -1,8 +1,9 @@
 import { useState, useRef } from "react";
 import { useQuery, useMutation as useRQMutation, useQueryClient } from "@tanstack/react-query";
-import { useGetCampaignStatus, useStartCampaignApi, useStopCampaignApi, getGetCampaignStatusQueryKey } from "@workspace/api-client-react";
 import type { CampaignLogEntry } from "@workspace/api-client-react";
 import Layout from "@/components/Layout";
+import { useRunAccount } from "@/hooks/use-tg-accounts";
+import { AccountSelector } from "@/components/AccountSelector";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -82,9 +83,19 @@ export default function TgCampaign() {
   const { toast } = useToast();
   const qc = useQueryClient();
 
-  const { data: status } = useGetCampaignStatus({ query: { refetchInterval: 2000 } });
-  const startCampaign = useStartCampaignApi();
-  const stopCampaign = useStopCampaignApi();
+  const { accounts, accountId, setAccountId, selected } = useRunAccount(2000);
+
+  const { data: status } = useQuery({
+    queryKey: ["campaign-status", accountId],
+    queryFn: () => apiGet(`/campaign/status${accountId ? `?accountId=${encodeURIComponent(accountId)}` : ""}`),
+    refetchInterval: 2000,
+  });
+  const startCampaign = useRQMutation({
+    mutationFn: ({ data }: { data: any }) => apiPost("/campaign/start", { ...data, accountId }),
+  });
+  const stopCampaign = useRQMutation({
+    mutationFn: (_vars?: any) => apiPost("/campaign/stop", { accountId }),
+  });
 
   const { data: templatesData } = useQuery({
     queryKey: ["templates"],
@@ -148,7 +159,7 @@ export default function TgCampaign() {
   };
 
   const scrapeGroup = useRQMutation({
-    mutationFn: () => apiPost("/scrape/group", { link: groupLink.trim(), limit: parseInt(groupLimit) || 5000 }),
+    mutationFn: () => apiPost("/scrape/group", { link: groupLink.trim(), limit: parseInt(groupLimit) || 5000, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
         const mapped = (res.members || [])
@@ -197,7 +208,7 @@ export default function TgCampaign() {
       onSuccess: (res) => {
         if (res.ok) {
           setShowLog(true);
-          qc.invalidateQueries({ queryKey: getGetCampaignStatusQueryKey() });
+          qc.invalidateQueries({ queryKey: ["campaign-status"] });
           toast({ title: "Campaign started!", description: `Sending to ${contacts.length} contacts` });
         } else {
           toast({ title: "Error", description: res.message || "Failed", variant: "destructive" });
@@ -210,7 +221,7 @@ export default function TgCampaign() {
   const handleStop = () => {
     stopCampaign.mutate({}, {
       onSuccess: () => {
-        qc.invalidateQueries({ queryKey: getGetCampaignStatusQueryKey() });
+        qc.invalidateQueries({ queryKey: ["campaign-status"] });
         toast({ title: "Campaign stopped" });
       }
     });
@@ -234,6 +245,27 @@ export default function TgCampaign() {
           <h1 className="text-2xl font-bold text-foreground">Telegram Campaign</h1>
           <p className="text-sm text-muted-foreground mt-1">Bulk DM via VCF, phone list, or generated numbers</p>
         </div>
+
+        {accounts.some(a => a.connected) ? (
+          <Card>
+            <CardContent className="p-4">
+              <AccountSelector accounts={accounts} accountId={accountId} onChange={setAccountId} />
+              <p className="text-[11px] text-muted-foreground mt-2">
+                The campaign sends as this account, using its own Telegram session. Each connected account can run its own campaign at the same time.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="border-yellow-500/30 bg-yellow-500/5">
+            <CardContent className="p-4 flex items-start gap-3">
+              <AlertTriangle className="w-4 h-4 text-yellow-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-foreground">No Telegram account connected</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Log in at least one account first — the campaign sends from that account's session.</p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Active campaign status */}
         {status?.active && (

@@ -6,12 +6,12 @@ const router = Router();
 
 router.get("/bot/status", (req, res) => {
   const bot = getBotInstance();
-  res.json(bot.getStatus());
+  res.json(bot.getStatus((req.query.accountId as string) || undefined));
 });
 
 router.post("/bot/disconnect", async (req, res) => {
   const bot = getBotInstance();
-  await bot.disconnect();
+  await bot.disconnect(req.body?.accountId);
   res.json({ ok: true, message: "Disconnected" });
 });
 
@@ -20,8 +20,8 @@ router.post("/login/start", async (req, res) => {
   const { phone, accountId, createNew, label, apiId, apiHash } = req.body;
   if (!phone) return res.status(400).json({ ok: false, message: "phone required" });
   try {
-    await bot.startLogin(phone, { accountId, createNew, label, apiId, apiHash });
-    res.json({ ok: true, message: "Code sent — check Telegram" });
+    const newAccountId = await bot.startLogin(phone, { accountId, createNew, label, apiId, apiHash });
+    res.json({ ok: true, message: "Code sent — check Telegram", accountId: newAccountId });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });
   }
@@ -77,10 +77,10 @@ router.post("/tg-accounts/:id/active", async (req, res) => {
 
 router.post("/login/code", async (req, res) => {
   const bot = getBotInstance();
-  const { code } = req.body;
+  const { code, accountId } = req.body;
   if (!code) return res.status(400).json({ ok: false, message: "code required" });
   try {
-    bot.submitCode(code);
+    bot.submitCode(code, accountId);
     res.json({ ok: true, message: "Code submitted" });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });
@@ -89,10 +89,10 @@ router.post("/login/code", async (req, res) => {
 
 router.post("/login/2fa", async (req, res) => {
   const bot = getBotInstance();
-  const { password } = req.body;
+  const { password, accountId } = req.body;
   if (!password) return res.status(400).json({ ok: false, message: "password required" });
   try {
-    bot.submit2FA(password);
+    bot.submit2FA(password, accountId);
     res.json({ ok: true, message: "2FA submitted" });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });
@@ -101,19 +101,19 @@ router.post("/login/2fa", async (req, res) => {
 
 router.get("/campaign/status", (req, res) => {
   const bot = getBotInstance();
-  res.json(bot.getCampaignStatus());
+  res.json(bot.getCampaignStatus((req.query.accountId as string) || undefined));
 });
 
 router.post("/campaign/start", async (req, res) => {
   const bot = getBotInstance();
-  const { contacts, message, minDelay, maxDelay, batchSize, batchPauseMin, typingDelay, autoVariation, dailyLimit, noCooldown } = req.body;
+  const { contacts, message, minDelay, maxDelay, batchSize, batchPauseMin, typingDelay, autoVariation, dailyLimit, noCooldown, accountId } = req.body;
   if (!contacts?.length || !message) {
     return res.status(400).json({ ok: false, message: "contacts and message required" });
   }
   try {
     await bot.startCampaignFromAPI(contacts, message, {
       minDelay, maxDelay, batchSize, batchPauseMin, typingDelay, autoVariation, dailyLimit, noCooldown
-    });
+    }, accountId);
     res.json({ ok: true, message: "Campaign started" });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });
@@ -122,7 +122,7 @@ router.post("/campaign/start", async (req, res) => {
 
 router.post("/campaign/stop", (req, res) => {
   const bot = getBotInstance();
-  bot.stopCampaign();
+  bot.stopCampaign(req.body?.accountId);
   res.json({ ok: true, message: "Campaign stopped" });
 });
 
@@ -176,10 +176,10 @@ router.post("/tg-credentials", (req, res) => {
 // Scrape members from a Telegram group/channel
 router.post("/scrape/group", async (req, res) => {
   const bot = getBotInstance();
-  const { link, limit } = req.body;
+  const { link, limit, accountId } = req.body;
   if (!link) return res.status(400).json({ ok: false, message: "link required" });
   try {
-    const members = await bot.scrapeGroup(link, Math.min(parseInt(limit) || 5000, 10000));
+    const members = await bot.scrapeGroup(link, Math.min(parseInt(limit) || 5000, 10000), accountId);
     res.json({ ok: true, count: members.length, members });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });
@@ -189,12 +189,12 @@ router.post("/scrape/group", async (req, res) => {
 // Add-members status & control
 router.get("/scrape/add-status", (req, res) => {
   const bot = getBotInstance();
-  res.json(bot.getAddStatus());
+  res.json(bot.getAddStatus((req.query.accountId as string) || undefined));
 });
 
 router.post("/scrape/add-stop", (req, res) => {
   const bot = getBotInstance();
-  bot.stopAddJob();
+  bot.stopAddJob(req.body?.accountId);
   res.json({ ok: true, message: "Add job stopped" });
 });
 
@@ -203,7 +203,7 @@ router.post("/scrape/add-stop", (req, res) => {
 // Also accepts legacy single: { targetGroup, sourceGroup: string, limit?, members? }
 router.post("/scrape/add-members", async (req, res) => {
   const bot = getBotInstance();
-  const { sourceGroup, sourceGroups, targetGroup, limit, members, noCooldown } = req.body;
+  const { sourceGroup, sourceGroups, targetGroup, limit, members, noCooldown, accountId } = req.body;
   if (!targetGroup) return res.status(400).json({ ok: false, message: "targetGroup required" });
 
   const maxLimit = Math.min(parseInt(limit) || 5000, 10000);
@@ -219,11 +219,11 @@ router.post("/scrape/add-members", async (req, res) => {
   try {
     if (sources.length > 0) {
       // Multi-source (or single-source via new path): scrape then add
-      await bot.startMultiSourceAddJob(targetGroup, sources, maxLimit, members?.length ? members : undefined);
+      await bot.startMultiSourceAddJob(targetGroup, sources, maxLimit, members?.length ? members : undefined, accountId);
       res.json({ ok: true, message: `Scrape & add started for ${sources.length} source group${sources.length > 1 ? "s" : ""}` });
     } else if (members?.length) {
       // Pre-loaded members (from the manual scrape flow) — add directly
-      await bot.startAddJob(targetGroup, members);
+      await bot.startAddJob(targetGroup, members, undefined, accountId);
       res.json({ ok: true, message: `Add job started for ${members.length} members` });
     } else {
       res.status(400).json({ ok: false, message: "Provide sourceGroups, sourceGroup, or a members array" });
@@ -236,7 +236,7 @@ router.post("/scrape/add-members", async (req, res) => {
 // Add contacts from a saved contact list to a target group
 router.post("/scrape/add-from-list", async (req, res) => {
   const bot = getBotInstance();
-  const { listId, targetGroup, noCooldown } = req.body;
+  const { listId, targetGroup, noCooldown, accountId } = req.body;
   if (!listId || !targetGroup) return res.status(400).json({ ok: false, message: "listId and targetGroup required" });
   const list = readSubdirItem<any>("contact-lists", listId, null);
   if (!list) return res.status(404).json({ ok: false, message: "Contact list not found" });
@@ -249,7 +249,7 @@ router.post("/scrape/add-from-list", async (req, res) => {
     id: c.id || "",
   }));
   try {
-    await bot.startAddJob(targetGroup, members, { noCooldown: noCooldown !== false });
+    await bot.startAddJob(targetGroup, members, { noCooldown: noCooldown !== false }, accountId);
     res.json({ ok: true, message: `Add job started for ${members.length} contacts from "${list.name}"` });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });

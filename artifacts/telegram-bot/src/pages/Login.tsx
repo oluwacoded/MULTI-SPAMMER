@@ -105,6 +105,9 @@ export default function Login() {
     }),
     onSuccess: (res: any) => {
       if (res.ok) {
+        // For a brand-new account the backend generates the id — capture it so the
+        // code/2FA submissions target THIS account (not whichever is "active").
+        if (res.accountId) setTarget(t => ({ accountId: res.accountId, isNew: t?.isNew ?? false }));
         setStep("code");
         setLoginArmed(false);
         // refetch status so the effect arms on the fresh awaiting_code state
@@ -116,7 +119,7 @@ export default function Login() {
   });
 
   const loginCode = useMutation({
-    mutationFn: () => apiPost("/login/code", { code: code.trim() }),
+    mutationFn: () => apiPost("/login/code", { code: code.trim(), accountId: target?.accountId }),
     onSuccess: (res: any) => {
       if (!res.ok) toast({ title: "Error", description: res.message, variant: "destructive" });
       else toast({ title: "Verifying…" }); // transition handled by the loginState effect
@@ -125,7 +128,7 @@ export default function Login() {
   });
 
   const login2fa = useMutation({
-    mutationFn: () => apiPost("/login/2fa", { password: password.trim() }),
+    mutationFn: () => apiPost("/login/2fa", { password: password.trim(), accountId: target?.accountId }),
     onSuccess: (res: any) => {
       if (!res.ok) toast({ title: "Error", description: res.message, variant: "destructive" });
       else toast({ title: "Verifying…" }); // transition handled by the loginState effect
@@ -152,7 +155,7 @@ export default function Login() {
   });
 
   const disconnect = useMutation({
-    mutationFn: () => apiPost("/bot/disconnect", {}),
+    mutationFn: (id?: string) => apiPost("/bot/disconnect", { accountId: id }),
     onSuccess: () => { refresh(); toast({ title: "Disconnected" }); },
   });
 
@@ -187,7 +190,7 @@ export default function Login() {
             )}
 
             {accounts.map((a) => {
-              const isConnected = a.connected && status?.connected;
+              const isConnected = a.connected;
               return (
                 <Card key={a.id} className={a.active ? "border-primary/40" : ""}>
                   <CardContent className="p-4 space-y-3">
@@ -219,13 +222,13 @@ export default function Login() {
                           <Repeat className="w-3.5 h-3.5 mr-1.5" /> Make active
                         </Button>
                       )}
-                      {!a.hasSession || (a.active && !isConnected) ? (
+                      {!isConnected ? (
                         <Button size="sm" onClick={() => startRelogin(a.id)}>
                           <Smartphone className="w-3.5 h-3.5 mr-1.5" /> {a.hasSession ? "Re-login" : "Log in"}
                         </Button>
                       ) : null}
-                      {a.active && isConnected && (
-                        <Button size="sm" variant="outline" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
+                      {isConnected && (
+                        <Button size="sm" variant="outline" onClick={() => disconnect.mutate(a.id)} disabled={disconnect.isPending}>
                           <LogOut className="w-3.5 h-3.5 mr-1.5" /> Disconnect
                         </Button>
                       )}
@@ -248,7 +251,8 @@ export default function Login() {
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">How linking works</p>
                 <ul className="space-y-1.5 text-xs text-muted-foreground">
                   <li className="flex items-start gap-2"><span className="text-primary mt-0.5">•</span> Each account can use its own API ID/Hash (from my.telegram.org/apps), or leave them blank to use the shared keys set in Settings.</li>
-                  <li className="flex items-start gap-2"><span className="text-primary mt-0.5">•</span> One account is "Active" at a time — scraping, adding and campaigns all run as the active account.</li>
+                  <li className="flex items-start gap-2"><span className="text-primary mt-0.5">•</span> All logged-in accounts stay connected at once. On Scraper and Campaign you pick which account runs each job, and several accounts can run their own jobs at the same time.</li>
+                  <li className="flex items-start gap-2"><span className="text-primary mt-0.5">•</span> "Active" just sets the default account shown on other pages — it no longer limits which accounts are connected.</li>
                   <li className="flex items-start gap-2"><span className="text-primary mt-0.5">•</span> Anyone with access to this dashboard can use or remove every linked account — keep the URL private.</li>
                 </ul>
               </CardContent>

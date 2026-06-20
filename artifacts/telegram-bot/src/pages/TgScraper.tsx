@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useGetBotStatus } from "@workspace/api-client-react";
 import Layout from "@/components/Layout";
+import { useRunAccount } from "@/hooks/use-tg-accounts";
+import { AccountSelector } from "@/components/AccountSelector";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,8 +21,8 @@ interface Member { username: string | null; phone: string | null; name: string; 
 export default function TgScraper() {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const { data: status } = useGetBotStatus({ query: { refetchInterval: 5000 } });
-  const connected = !!status?.connected;
+  const { accounts, accountId, setAccountId, selected } = useRunAccount(5000);
+  const connected = !!selected?.connected;
 
   const [link, setLink] = useState("");
   const [limit, setLimit] = useState("5000");
@@ -45,8 +46,8 @@ export default function TgScraper() {
   });
 
   const { data: addStatus, refetch: refetchAdd } = useQuery({
-    queryKey: ["add-status"],
-    queryFn: () => apiGet("/scrape/add-status"),
+    queryKey: ["add-status", accountId],
+    queryFn: () => apiGet(`/scrape/add-status${accountId ? `?accountId=${encodeURIComponent(accountId)}` : ""}`),
     refetchInterval: (query) => {
       const data = query.state.data as any;
       return data?.active ? 800 : false;
@@ -54,7 +55,7 @@ export default function TgScraper() {
   });
 
   const scrape = useMutation({
-    mutationFn: () => apiPost("/scrape/group", { link, limit: parseInt(limit) || 5000 }),
+    mutationFn: () => apiPost("/scrape/group", { link, limit: parseInt(limit) || 5000, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
         setMembers(res.members || []);
@@ -79,7 +80,7 @@ export default function TgScraper() {
   // Multi-source scrape & add
   const startAddDirect = useMutation({
     mutationFn: (data: { sourceGroups: string[]; targetGroup: string; limit: number }) =>
-      apiPost("/scrape/add-members", data),
+      apiPost("/scrape/add-members", { ...data, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
         refetchAdd();
@@ -93,7 +94,7 @@ export default function TgScraper() {
 
   const startAdd = useMutation({
     mutationFn: (data: { targetGroup: string; members: Member[] }) =>
-      apiPost("/scrape/add-members", data),
+      apiPost("/scrape/add-members", { ...data, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
         refetchAdd();
@@ -106,7 +107,7 @@ export default function TgScraper() {
   });
 
   const stopAdd = useMutation({
-    mutationFn: () => apiPost("/scrape/add-stop", {}),
+    mutationFn: () => apiPost("/scrape/add-stop", { accountId }),
     onSuccess: () => {
       refetchAdd();
       toast({ title: "Add job stopped" });
@@ -115,7 +116,7 @@ export default function TgScraper() {
 
   const startAddFromList = useMutation({
     mutationFn: (data: { listId: string; targetGroup: string }) =>
-      apiPost("/scrape/add-from-list", data),
+      apiPost("/scrape/add-from-list", { ...data, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
         refetchAdd();
@@ -186,13 +187,22 @@ export default function TgScraper() {
           <p className="text-sm text-muted-foreground mt-1">Pull members from a public Telegram group or channel</p>
         </div>
 
-        {!connected && (
+        {accounts.some(a => a.connected) ? (
+          <Card>
+            <CardContent className="p-4">
+              <AccountSelector accounts={accounts} accountId={accountId} onChange={setAccountId} />
+              <p className="text-[11px] text-muted-foreground mt-2">
+                Scraping and adding run as this account, using its own Telegram session. Each connected account can run its own job at the same time.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
           <Card className="border-yellow-500/30 bg-yellow-500/5">
             <CardContent className="p-4 flex items-start gap-3">
               <AlertTriangle className="w-4 h-4 text-yellow-500 shrink-0 mt-0.5" />
               <div>
-                <p className="text-sm font-medium text-foreground">Not logged in to Telegram</p>
-                <p className="text-xs text-muted-foreground mt-0.5">Log in first — scraping uses your active Telegram session.</p>
+                <p className="text-sm font-medium text-foreground">No Telegram account connected</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Log in at least one account first — scraping uses that account's Telegram session.</p>
               </div>
             </CardContent>
           </Card>
