@@ -124,7 +124,7 @@ class TelegramBotEngine {
   private switching = false;
   private handlerClient: TelegramClient | null = null;
   private campaign: any = { active: false, contacts: [], index: 0, message: "", sent: 0, failed: 0, noTelegram: 0, skipped: 0, startTime: null, timer: null, onUpdate: null, delayMs: 2400, log: [], batchCount: 0, floodWait: 0, options: {} };
-  private addJob: any = { active: false, total: 0, added: 0, failed: 0, privacy: 0, index: 0, members: [], targetEntity: null, timer: null, log: [], floodWait: 0, startTime: null };
+  private addJob: any = { active: false, total: 0, added: 0, failed: 0, privacy: 0, index: 0, members: [], targetEntity: null, timer: null, log: [], floodWait: 0, startTime: null, scrapePhase: false, currentSource: null, sourcesTotal: 0, sourcesDone: 0 };
   private blacklist = new Set<string>();
 
   constructor() {
@@ -464,13 +464,101 @@ class TelegramBotEngine {
 
   // ── Add-Members engine ──────────────────────────────────────────────────────
 
+  private _normalizeGroupLink(link: string): string {
+    return link.trim()
+      .replace(/^https?:\/\//i, "").replace(/^t\.me\//i, "").replace(/^@/, "").replace(/\/+$/, "");
+  }
+
+  // Multi-source: scrape several source groups sequentially, deduplicate, then add all to target.
+  async startMultiSourceAddJob(
+    targetGroup: string,
+    sourceGroups: string[],
+    limit: number,
+    preloadedMembers?: Array<{ username: string | null; phone: string | null; name: string; id: string }>
+  ) {
+    if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram — log in first");
+    if (this.addJob.active) throw new Error("An add job is already running — stop it first");
+
+    const normalizedTarget = this._normalizeGroupLink(targetGroup);
+    if (/^(joinchat\/|\+)/i.test(normalizedTarget)) {
+      throw new Error("Private invite links not supported. Use the group's public @username.");
+    }
+
+    let targetEntity: any;
+    try {
+      targetEntity = await this.tgClient.getEntity(normalizedTarget);
+    } catch (e: any) {
+      throw new Error(`Could not find target group/channel: ${e?.errorMessage || e?.message || "unknown"}`);
+    }
+
+    // Initialise job in scrape phase
+    this.addJob = {
+      active: true, total: 0, added: 0, failed: 0, privacy: 0, index: 0,
+      members: [], targetEntity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
+      scrapePhase: sourceGroups.length > 0, currentSource: sourceGroups[0] || null,
+      sourcesTotal: sourceGroups.length, sourcesDone: 0,
+      noCooldown: false, peerFloodStop: false,
+    };
+
+    // Scrape each source group sequentially, then kick off the add loop
+    (async () => {
+      const seen = new Set<string>();
+      const allMembers: Array<{ username: string | null; phone: string | null; name: string; id: string }> = [];
+
+      const dedupAdd = (m: { username: string | null; phone: string | null; name: string; id: string }) => {
+        const key = m.username ? `u:${m.username.toLowerCase()}` : m.id ? `i:${m.id}` : null;
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        allMembers.push(m);
+      };
+
+      // Include any already-scraped members passed in (e.g. from the manual scrape flow)
+      if (preloadedMembers?.length) {
+        for (const m of preloadedMembers) dedupAdd(m);
+      }
+
+      for (let si = 0; si < sourceGroups.length; si++) {
+        if (!this.addJob.active) break; // stopped by user
+        const src = sourceGroups[si];
+        this.addJob.currentSource = src;
+        this.addJob.sourcesDone = si;
+        this.addJob.log.push({ status: "scraping", msg: `🔍 Scraping ${src} (${si + 1}/${sourceGroups.length})…`, at: Date.now() });
+
+        try {
+          const scraped = await this.scrapeGroup(src, limit);
+          for (const m of scraped) dedupAdd(m);
+          this.addJob.log.push({ status: "scraped", msg: `✅ ${src} — ${scraped.length} found, ${allMembers.length} unique so far`, at: Date.now() });
+        } catch (e: any) {
+          this.addJob.log.push({ status: "failed", msg: `❌ Failed to scrape ${src}: ${e.message}`, at: Date.now() });
+        }
+        this.addJob.sourcesDone = si + 1;
+      }
+
+      if (!this.addJob.active) return; // stopped mid-scrape
+
+      if (!allMembers.length) {
+        this.addJob.active = false;
+        this.addJob.scrapePhase = false;
+        this.addJob.log.push({ status: "done", msg: "⚠️ No members found across all source groups.", at: Date.now() });
+        return;
+      }
+
+      // Transition to add phase
+      this.addJob.scrapePhase = false;
+      this.addJob.currentSource = null;
+      this.addJob.members = allMembers;
+      this.addJob.total = allMembers.length;
+      this.addJob.log.push({ status: "info", msg: `🚀 Starting add job for ${allMembers.length} unique members…`, at: Date.now() });
+      this._addNext();
+    })();
+  }
+
   async startAddJob(targetGroup: string, members: Array<{ username: string | null; phone: string | null; name: string; id: string }>, options: { noCooldown?: boolean } = {}) {
     if (!this.isConnected || !this.tgClient) throw new Error("Not connected to Telegram — log in first");
     if (this.addJob.active) throw new Error("An add job is already running — stop it first");
     if (!members.length) throw new Error("No members provided");
 
-    let normalized = targetGroup.trim()
-      .replace(/^https?:\/\//i, "").replace(/^t\.me\//i, "").replace(/^@/, "").replace(/\/+$/, "");
+    const normalized = this._normalizeGroupLink(targetGroup);
     if (/^(joinchat\/|\+)/i.test(normalized)) {
       throw new Error("Private invite links not supported. Use the group's public @username.");
     }
@@ -486,6 +574,7 @@ class TelegramBotEngine {
       active: true, total: members.length, added: 0, failed: 0, privacy: 0, index: 0,
       members, targetEntity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
       noCooldown: options.noCooldown !== false, peerFloodStop: false,
+      scrapePhase: false, currentSource: null, sourcesTotal: 0, sourcesDone: 0,
     };
     this._addNext();
   }
@@ -633,6 +722,10 @@ class TelegramBotEngine {
       noCooldown: !!j.noCooldown,
       elapsed: j.startTime ? Math.round((Date.now() - j.startTime) / 1000) : 0,
       log: (j.log || []).slice(-100),
+      scrapePhase: j.scrapePhase || false,
+      currentSource: j.currentSource || null,
+      sourcesTotal: j.sourcesTotal || 0,
+      sourcesDone: j.sourcesDone || 0,
     };
   }
 

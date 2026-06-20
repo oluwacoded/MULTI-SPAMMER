@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiPost, apiGet } from "@/lib/api";
-import { Users, Download, Search, Loader2, Info, Save, AlertTriangle, Phone, AtSign, UserPlus, Zap, Square, CheckCircle2, XCircle, ShieldX, BookUser } from "lucide-react";
+import { Users, Download, Search, Loader2, Info, Save, AlertTriangle, Phone, AtSign, UserPlus, Zap, CheckCircle2, XCircle, ShieldX, BookUser, Plus, X, List } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface Member { username: string | null; phone: string | null; name: string; id: string; }
@@ -29,7 +29,9 @@ export default function TgScraper() {
   const [saveDialog, setSaveDialog] = useState(false);
   const [listName, setListName] = useState("");
 
-  // One-click scrape+add state
+  // Multi-source queue state
+  const [sourceInput, setSourceInput] = useState("");
+  const [sourceGroups, setSourceGroups] = useState<string[]>([]);
   const [scrapeAddTarget, setScrapeAddTarget] = useState("");
 
   // Add-to-group state (for scraped-members-in-memory flow)
@@ -74,9 +76,9 @@ export default function TgScraper() {
     },
   });
 
-  // One-click: scrape sourceGroup + immediately add to targetGroup
+  // Multi-source scrape & add
   const startAddDirect = useMutation({
-    mutationFn: (data: { sourceGroup: string; targetGroup: string; limit: number }) =>
+    mutationFn: (data: { sourceGroups: string[]; targetGroup: string; limit: number }) =>
       apiPost("/scrape/add-members", data),
     onSuccess: (res: any) => {
       if (res.ok) {
@@ -158,6 +160,21 @@ export default function TgScraper() {
     URL.revokeObjectURL(url);
   };
 
+  const addSourceGroup = () => {
+    const val = sourceInput.trim();
+    if (!val) return;
+    if (sourceGroups.includes(val)) {
+      toast({ title: "Already in the list", variant: "destructive" });
+      return;
+    }
+    setSourceGroups(prev => [...prev, val]);
+    setSourceInput("");
+  };
+
+  const removeSourceGroup = (idx: number) => {
+    setSourceGroups(prev => prev.filter((_, i) => i !== idx));
+  };
+
   const savedLists: any[] = listsData?.lists || [];
   const addJobActive = (addStatus as any)?.active;
 
@@ -221,57 +238,95 @@ export default function TgScraper() {
           </CardContent>
         </Card>
 
-        {/* ── One-click: Scrape & Auto-Add ─────────────────────────────────── */}
+        {/* ── Multi-Source: Scrape & Auto-Add ──────────────────────────────── */}
         <Card className={addJobActive ? "border-primary/30" : ""}>
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
-              <Zap className="w-4 h-4 text-primary" /> Scrape &amp; Auto-Add (One Click)
+              <Zap className="w-4 h-4 text-primary" /> Scrape &amp; Auto-Add (Multi-Source)
             </CardTitle>
-            <CardDescription>Enter a source group and your target group — the bot scrapes and adds members automatically, no intermediate step</CardDescription>
+            <CardDescription>Queue multiple source groups — the bot scrapes all of them, deduplicates, and adds members to your target in one pass</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {addJobActive ? (
               <AddJobProgress status={addStatus as any} onStop={() => stopAdd.mutate()} stopping={stopAdd.isPending} />
             ) : (
               <>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Source group (to steal from)</Label>
+                {/* Source groups list */}
+                <div>
+                  <Label className="text-xs text-muted-foreground flex items-center gap-1.5"><List className="w-3 h-3" /> Source groups (to steal from)</Label>
+                  <div className="flex gap-2 mt-1">
                     <Input
-                      value={link}
-                      onChange={e => setLink(e.target.value)}
+                      value={sourceInput}
+                      onChange={e => setSourceInput(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && addSourceGroup()}
                       placeholder="@sourcegroup or t.me/…"
-                      className="mt-1 font-mono text-xs"
+                      className="font-mono text-xs"
                     />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={addSourceGroup}
+                      disabled={!sourceInput.trim()}
+                      className="shrink-0 px-3"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </Button>
                   </div>
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Your target group/channel</Label>
-                    <Input
-                      value={scrapeAddTarget}
-                      onChange={e => setScrapeAddTarget(e.target.value)}
-                      placeholder="@mygroup or t.me/…"
-                      className="mt-1 font-mono text-xs"
-                    />
-                  </div>
+
+                  {sourceGroups.length > 0 && (
+                    <div className="mt-2 rounded-md border divide-y divide-border">
+                      {sourceGroups.map((sg, i) => (
+                        <div key={i} className="flex items-center gap-2 px-3 py-2">
+                          <span className="w-4 h-4 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">{i + 1}</span>
+                          <span className="flex-1 text-xs font-mono text-foreground truncate">{sg}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeSourceGroup(i)}
+                            className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                            aria-label="Remove"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {sourceGroups.length === 0 && (
+                    <p className="text-xs text-muted-foreground mt-1.5 pl-0.5">Add at least one source group above, then set your target below.</p>
+                  )}
                 </div>
+
+                {/* Target group */}
+                <div>
+                  <Label className="text-xs text-muted-foreground">Your target group/channel</Label>
+                  <Input
+                    value={scrapeAddTarget}
+                    onChange={e => setScrapeAddTarget(e.target.value)}
+                    placeholder="@mygroup or t.me/…"
+                    className="mt-1 font-mono text-xs"
+                  />
+                </div>
+
                 <div className="flex items-end gap-2">
                   <div className="w-28 shrink-0">
-                    <Label className="text-xs text-muted-foreground">Max members</Label>
+                    <Label className="text-xs text-muted-foreground">Max / source</Label>
                     <Input type="number" min={1} max={10000} value={limit} onChange={e => setLimit(e.target.value)} className="mt-1 h-9" />
                   </div>
                   <Button
                     className="flex-1"
-                    onClick={() => startAddDirect.mutate({ sourceGroup: link.trim(), targetGroup: scrapeAddTarget.trim(), limit: parseInt(limit) || 5000 })}
-                    disabled={!connected || !link.trim() || !scrapeAddTarget.trim() || startAddDirect.isPending}
+                    onClick={() => startAddDirect.mutate({ sourceGroups, targetGroup: scrapeAddTarget.trim(), limit: parseInt(limit) || 5000 })}
+                    disabled={!connected || sourceGroups.length === 0 || !scrapeAddTarget.trim() || startAddDirect.isPending}
                   >
                     {startAddDirect.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
-                    {startAddDirect.isPending ? "Starting…" : "Scrape & Add"}
+                    {startAddDirect.isPending ? "Starting…" : `Scrape & Add${sourceGroups.length > 1 ? ` (${sourceGroups.length} sources)` : ""}`}
                   </Button>
                 </div>
                 <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50">
                   <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
                   <p className="text-xs text-muted-foreground">
-                    Scrapes the source group, then adds everyone as fast as Telegram allows — no countdown. It only pauses if Telegram enforces a flood wait, and stops automatically if the account gets rate-limited.
+                    Each source is scraped sequentially. Members appearing in multiple groups are only added once (deduplication by username/ID). Adds one member every ~2–5s to avoid flood limits.
                   </p>
                 </div>
               </>
@@ -452,64 +507,97 @@ export default function TgScraper() {
 
 function AddJobProgress({ status, onStop, stopping }: { status: any; onStop: () => void; stopping: boolean }) {
   const pct = status?.percent ?? 0;
+  const scrapePhase = status?.scrapePhase ?? false;
+  const currentSource = status?.currentSource ?? null;
+  const sourcesTotal = status?.sourcesTotal ?? 0;
+  const sourcesDone = status?.sourcesDone ?? 0;
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          <p className="text-sm font-semibold">Adding members…</p>
+          <p className="text-sm font-semibold">
+            {scrapePhase ? "Scraping sources…" : "Adding members…"}
+          </p>
+          {scrapePhase && sourcesTotal > 0 && (
+            <Badge variant="outline" className="text-blue-400 border-blue-400/40 text-xs">
+              {sourcesDone}/{sourcesTotal} scraped
+            </Badge>
+          )}
           {(status?.floodWait ?? 0) > 0 && (
             <Badge variant="outline" className="text-orange-400 border-orange-400/40 text-xs">
               Flood wait {status.floodWait}s
             </Badge>
           )}
         </div>
-        <Badge>{pct}%</Badge>
+        {!scrapePhase && <Badge>{pct}%</Badge>}
       </div>
-      <Progress value={pct} className="h-2" />
-      <div className="grid grid-cols-4 gap-1.5 text-center text-xs">
-        <div className="rounded-md bg-green-500/10 border border-green-500/20 p-1.5">
-          <p className="font-bold text-green-400">{status?.added ?? 0}</p>
-          <p className="text-muted-foreground">Added</p>
+
+      {/* Scrape phase: show current source being scraped */}
+      {scrapePhase && currentSource && (
+        <div className="flex items-center gap-2 p-2 rounded-md bg-blue-500/5 border border-blue-500/20">
+          <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin shrink-0" />
+          <p className="text-xs text-blue-300 font-mono truncate">{currentSource}</p>
         </div>
-        <div className="rounded-md bg-yellow-500/10 border border-yellow-500/20 p-1.5">
-          <p className="font-bold text-yellow-400">{status?.privacy ?? 0}</p>
-          <p className="text-muted-foreground">Privacy</p>
-        </div>
-        <div className="rounded-md bg-red-500/10 border border-red-500/20 p-1.5">
-          <p className="font-bold text-red-400">{status?.failed ?? 0}</p>
-          <p className="text-muted-foreground">Failed</p>
-        </div>
-        <div className="rounded-md bg-muted/50 p-1.5">
-          <p className="font-bold text-muted-foreground">{(status?.total ?? 0) - (status?.index ?? 0)}</p>
-          <p className="text-muted-foreground">Left</p>
-        </div>
-      </div>
+      )}
+
+      {/* Add phase: progress bar + stats */}
+      {!scrapePhase && (
+        <>
+          <Progress value={pct} className="h-2" />
+          <div className="grid grid-cols-4 gap-1.5 text-center text-xs">
+            <div className="rounded-md bg-green-500/10 border border-green-500/20 p-1.5">
+              <p className="font-bold text-green-400">{status?.added ?? 0}</p>
+              <p className="text-muted-foreground">Added</p>
+            </div>
+            <div className="rounded-md bg-yellow-500/10 border border-yellow-500/20 p-1.5">
+              <p className="font-bold text-yellow-400">{status?.privacy ?? 0}</p>
+              <p className="text-muted-foreground">Privacy</p>
+            </div>
+            <div className="rounded-md bg-red-500/10 border border-red-500/20 p-1.5">
+              <p className="font-bold text-red-400">{status?.failed ?? 0}</p>
+              <p className="text-muted-foreground">Failed</p>
+            </div>
+            <div className="rounded-md bg-muted/50 p-1.5">
+              <p className="font-bold text-muted-foreground">{(status?.total ?? 0) - (status?.index ?? 0)}</p>
+              <p className="text-muted-foreground">Left</p>
+            </div>
+          </div>
+        </>
+      )}
+
       {/* Recent log */}
       {status?.log?.length > 0 && (
         <div className="max-h-36 overflow-y-auto divide-y divide-border rounded-md border">
           {[...(status.log as any[])].reverse().slice(0, 20).map((entry: any, i: number) => {
+            const isInfo = entry.status === "info" || entry.status === "scraped";
+            const isScraping = entry.status === "scraping";
             const isAdded = entry.status === "added" || entry.status === "already";
             const isPrivacy = entry.status === "privacy";
             const isFail = entry.status === "failed" || entry.status === "skipped";
+            const isDone = entry.status === "done" || entry.status === "stopped";
             return (
               <div key={i} className="flex items-center gap-2 px-3 py-1.5">
-                {isAdded ? <CheckCircle2 className="w-3 h-3 text-green-500 shrink-0" />
-                  : isPrivacy ? <ShieldX className="w-3 h-3 text-yellow-500 shrink-0" />
-                  : isFail ? <XCircle className="w-3 h-3 text-red-500 shrink-0" />
-                  : entry.status === "done" ? <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />
-                  : <Loader2 className="w-3 h-3 text-blue-400 animate-spin shrink-0" />}
-                <span className={cn("text-xs truncate flex-1", entry.status === "done" ? "text-primary font-medium" : "text-foreground")}>
-                  {entry.msg || entry.name || entry.username}
+                {isScraping && <Loader2 className="w-3 h-3 text-blue-400 animate-spin shrink-0" />}
+                {isInfo && <span className="w-3 h-3 rounded-full bg-blue-400/80 shrink-0" />}
+                {isAdded && <CheckCircle2 className="w-3 h-3 text-green-400 shrink-0" />}
+                {isPrivacy && <ShieldX className="w-3 h-3 text-yellow-400 shrink-0" />}
+                {isFail && <XCircle className="w-3 h-3 text-red-400 shrink-0" />}
+                {isDone && <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />}
+                <span className={cn("text-xs truncate", isDone && "text-primary font-medium", (isScraping || isInfo) && "text-blue-300")}>
+                  {entry.msg || (entry.username ? `@${entry.username}` : entry.name) || "—"}
                 </span>
-                {entry.error && <span className="text-xs text-muted-foreground truncate max-w-[100px]">{entry.error}</span>}
+                {entry.error && <span className="text-xs text-muted-foreground ml-auto shrink-0 truncate max-w-[120px]">{entry.error}</span>}
               </div>
             );
           })}
         </div>
       )}
+
       <Button variant="destructive" size="sm" className="w-full" onClick={onStop} disabled={stopping}>
-        <Square className="w-3.5 h-3.5 mr-1.5" /> Stop
+        {stopping ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : null}
+        Stop Job
       </Button>
     </div>
   );

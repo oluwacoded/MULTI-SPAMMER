@@ -198,19 +198,36 @@ router.post("/scrape/add-stop", (req, res) => {
   res.json({ ok: true, message: "Add job stopped" });
 });
 
-// Scrape source group then immediately add all members to target group
+// Scrape one or more source groups then add all members to target group.
+// Accepts: { targetGroup, sourceGroups: string[], limit?, members? }
+// Also accepts legacy single: { targetGroup, sourceGroup: string, limit?, members? }
 router.post("/scrape/add-members", async (req, res) => {
   const bot = getBotInstance();
-  const { sourceGroup, targetGroup, limit, members, noCooldown } = req.body;
+  const { sourceGroup, sourceGroups, targetGroup, limit, members, noCooldown } = req.body;
   if (!targetGroup) return res.status(400).json({ ok: false, message: "targetGroup required" });
+
+  const maxLimit = Math.min(parseInt(limit) || 5000, 10000);
+
+  // Build the list of source groups to scrape
+  const sources: string[] = [];
+  if (Array.isArray(sourceGroups) && sourceGroups.length) {
+    sources.push(...sourceGroups.filter((s: string) => s?.trim()));
+  } else if (typeof sourceGroup === "string" && sourceGroup.trim()) {
+    sources.push(sourceGroup.trim());
+  }
+
   try {
-    let toAdd = members;
-    if (!toAdd?.length && sourceGroup) {
-      toAdd = await bot.scrapeGroup(sourceGroup, Math.min(parseInt(limit) || 5000, 10000));
+    if (sources.length > 0) {
+      // Multi-source (or single-source via new path): scrape then add
+      await bot.startMultiSourceAddJob(targetGroup, sources, maxLimit, members?.length ? members : undefined);
+      res.json({ ok: true, message: `Scrape & add started for ${sources.length} source group${sources.length > 1 ? "s" : ""}` });
+    } else if (members?.length) {
+      // Pre-loaded members (from the manual scrape flow) — add directly
+      await bot.startAddJob(targetGroup, members);
+      res.json({ ok: true, message: `Add job started for ${members.length} members` });
+    } else {
+      res.status(400).json({ ok: false, message: "Provide sourceGroups, sourceGroup, or a members array" });
     }
-    if (!toAdd?.length) return res.status(400).json({ ok: false, message: "No members to add — provide sourceGroup or members array" });
-    await bot.startAddJob(targetGroup, toAdd, { noCooldown: noCooldown !== false });
-    res.json({ ok: true, message: `Add job started for ${toAdd.length} members` });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });
   }
