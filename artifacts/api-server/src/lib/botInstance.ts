@@ -807,6 +807,14 @@ class TelegramBotEngine {
           logEntry.error = "PEER_FLOOD — account limited";
           job.failed++;
           job.peerFloodStop = true;
+        } else if (msg.includes("USERS_TOO_MUCH")) {
+          // Target is full — affects every remaining member, so stop instead of
+          // failing through the whole list.
+          logEntry.status = "failed";
+          logEntry.error = "Target group is full";
+          job.failed++;
+          job.fatalStop = true;
+          job.fatalMsg = `⛔ Stopped: the target group/channel is full — it reached Telegram's member limit (USERS_TOO_MUCH) and can't accept more members. Basic groups cap at 200 members; convert it to a public supergroup or use one that isn't full. Added: ${job.added}.`;
         } else if (
           msg.includes("CHAT_WRITE_FORBIDDEN") ||
           msg.includes("CHAT_ADMIN_REQUIRED") ||
@@ -836,7 +844,7 @@ class TelegramBotEngine {
       // error affects every member, so there's no point retrying the whole list.
       if (job.fatalStop) {
         job.active = false;
-        job.log.push({ status: "stopped", msg: `⛔ Stopped: this account can't add members to the target group/channel. The connected Telegram account must be a member AND an admin there with "Add members" permission. (Telegram may also temporarily block adding if the account was recently rate-limited.) Added: ${job.added}.`, at: Date.now() });
+        job.log.push({ status: "stopped", msg: job.fatalMsg || `⛔ Stopped: this account can't add members to the target group/channel. The connected Telegram account must be a member AND an admin there with "Add members" permission. (Telegram may also temporarily block adding if the account was recently rate-limited.) Added: ${job.added}.`, at: Date.now() });
         return;
       }
       // Stop immediately if Telegram flagged the account (PEER_FLOOD) — hammering risks a ban.
