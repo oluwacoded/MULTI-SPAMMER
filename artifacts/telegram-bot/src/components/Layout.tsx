@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Send, MessageSquare, Zap, Settings, LogIn, Radio, Menu, X, BookUser, History, Server, Check, Users, Mail, MessageCircle, Plus, Trash2, Wallet, Smartphone, ExternalLink } from "lucide-react";
+import { LayoutDashboard, Send, MessageSquare, Zap, Settings, LogIn, Radio, Menu, X, BookUser, History, Server, Check, Users, Mail, MessageCircle, Plus, Trash2, Wallet, Smartphone, ExternalLink, UserCog } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { useGetBotStatus } from "@workspace/api-client-react";
@@ -9,6 +9,7 @@ import { apiGet } from "@/lib/api";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/login", label: "Telegram Accounts", icon: UserCog },
   { href: "/tg-campaign", label: "TG Campaign", icon: Send },
   { href: "/tg-scraper", label: "Group Scraper", icon: Users },
   { href: "/gmail", label: "Gmail", icon: Mail },
