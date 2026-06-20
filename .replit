@@ -103,3 +103,7 @@ externalPort = 8099
 deploymentTarget = "vm"
 run = ["bash", "-c", "PORT=8080 NODE_ENV=production node --enable-source-maps artifacts/api-server/dist/index.mjs"]
 build = ["bash", "-c", "pnpm install && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/telegram-bot run build"]
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 180000
