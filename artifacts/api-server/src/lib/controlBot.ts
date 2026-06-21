@@ -122,7 +122,7 @@ function telegramStatusText(): string {
     const accounts: any[] = s.accounts || [];
     const lines = accounts.map((a) => {
       const conn = a.connected ? "🟢" : "⚪️";
-      const job = a.addJob?.running
+      const job = a.addJob?.active
         ? ` — adding ${a.addJob.added}/${a.addJob.total}`
         : "";
       return `${conn} <b>${esc(a.label || a.id)}</b>${esc(job)}`;
@@ -177,17 +177,24 @@ export function startControlBot(): void {
     logger.info("Control bot disabled (TELEGRAM_CONTROL_BOT_TOKEN not set)");
     return;
   }
-  _started = true;
 
+  // Fail closed: refuse to run unrestricted. Without a valid owner chat id the
+  // bot could be driven by anyone who finds it, so we don't start at all.
   const ownerRaw = process.env["TELEGRAM_CONTROL_CHAT_ID"];
-  const ownerId = ownerRaw ? Number(ownerRaw) : null;
+  const ownerId = ownerRaw ? Number(ownerRaw) : NaN;
+  if (!Number.isFinite(ownerId)) {
+    logger.error(
+      "Control bot NOT started: TELEGRAM_CONTROL_CHAT_ID is missing or invalid (refusing to run unrestricted)",
+    );
+    return;
+  }
+  _started = true;
 
   const bot = new Bot(token);
 
   // ── Auth: only the owner chat may use the bot ──
   bot.use(async (ctx, next) => {
-    const id = ctx.chat?.id;
-    if (ownerId && id !== ownerId) {
+    if (ctx.chat?.id !== ownerId) {
       try {
         await ctx.reply("⛔️ Not authorized.");
       } catch {}
@@ -334,7 +341,7 @@ export function startControlBot(): void {
     await ctx.answerCallbackQuery();
     try {
       const s: any = getBotInstance().getAddStatus();
-      if (!s || !s.running) {
+      if (!s || !s.active) {
         await ctx.reply("No add job running.");
         return;
       }
