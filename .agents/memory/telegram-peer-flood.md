@@ -34,3 +34,14 @@ ban risk; stopping on the first flood made fresh accounts show "0 added" and qui
 **How to apply:** don't reintroduce an unconditional PEER_FLOOD stop. Keep it
 gated behind safeMode. Note this does NOT bypass the limit — flagged accounts may
 still add few/none — it just doesn't abort the run.
+
+## Turbo default must be set in EVERY add-job init path
+There are multiple job-init entry points (`startAddJob`, `startMultiSourceAddJob`)
+that each independently seed `job.noCooldown`. `_addNext`'s delay is: safeMode →
+SAFE_DELAY; else noCooldown → ~130–250ms (turbo); else → 2–5s. So a non-safe path
+that leaves `noCooldown:false` silently runs at the SLOW 2–5s pace, not turbo.
+**Why:** `startMultiSourceAddJob` once hardcoded `noCooldown:false`, quietly
+downgrading the scrape-&-add flow off turbo — the exact "fast adding like before"
+the user cares about. **How to apply:** every non-safe add path must set
+`noCooldown: !safeMode` (or accept+pass the option); when adding a new add-job
+init path, wire pacing the same way or it defaults to slow.

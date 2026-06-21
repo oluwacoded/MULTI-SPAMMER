@@ -592,9 +592,37 @@ class TelegramBotEngine {
       .replace(/^https?:\/\//i, "").replace(/^t\.me\//i, "").replace(/^@/, "").replace(/\/+$/, "");
   }
 
+  // Resolve one or many target groups/channels into entities. Accepts a single
+  // string or an array; dedupes and validates each. Used so a job can add the
+  // same member list into several of the user's own groups/channels in one run.
+  private async _resolveTargets(client: any, targetGroup: string | string[]): Promise<Array<{ entity: any; label: string }>> {
+    const raw = Array.isArray(targetGroup) ? targetGroup : [targetGroup];
+    const inputs = raw.map(t => (t || "").trim()).filter(Boolean);
+    if (!inputs.length) throw new Error("No target group/channel provided");
+    const targets: Array<{ entity: any; label: string }> = [];
+    const seen = new Set<string>();
+    for (const t of inputs) {
+      const normalized = this._normalizeGroupLink(t);
+      if (/^(joinchat\/|\+)/i.test(normalized)) {
+        throw new Error(`Private invite links not supported (${t}). Use the group's public @username.`);
+      }
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let entity: any;
+      try {
+        entity = await client.getEntity(normalized);
+      } catch (e: any) {
+        throw new Error(`Could not find target group/channel "${t}": ${e?.errorMessage || e?.message || "unknown"}`);
+      }
+      targets.push({ entity, label: t });
+    }
+    return targets;
+  }
+
   // Multi-source: scrape several source groups sequentially, deduplicate, then add all to target.
   async startMultiSourceAddJob(
-    targetGroup: string,
+    targetGroup: string | string[],
     sourceGroups: string[],
     limit: number,
     preloadedMembers?: Array<{ username: string | null; phone: string | null; name: string; id: string }>,
@@ -605,25 +633,16 @@ class TelegramBotEngine {
     const client = s.client!;
     if (s.addJob.active) throw new Error("An add job is already running on this account — stop it first");
 
-    const normalizedTarget = this._normalizeGroupLink(targetGroup);
-    if (/^(joinchat\/|\+)/i.test(normalizedTarget)) {
-      throw new Error("Private invite links not supported. Use the group's public @username.");
-    }
-
-    let targetEntity: any;
-    try {
-      targetEntity = await client.getEntity(normalizedTarget);
-    } catch (e: any) {
-      throw new Error(`Could not find target group/channel: ${e?.errorMessage || e?.message || "unknown"}`);
-    }
+    const targets = await this._resolveTargets(client, targetGroup);
 
     // Initialise job in scrape phase
     s.addJob = {
       active: true, total: 0, added: 0, failed: 0, privacy: 0, index: 0,
-      members: [], targetEntity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
+      members: [], targets, targetEntity: targets[0].entity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
       scrapePhase: sourceGroups.length > 0, currentSource: sourceGroups[0] || null,
       sourcesTotal: sourceGroups.length, sourcesDone: 0,
-      noCooldown: false, peerFloodStop: false, fatalStop: false,
+      // Turbo is the default for scrape-&-add; Safe mode uses its own SAFE_DELAY.
+      noCooldown: !safeMode, peerFloodStop: false, fatalStop: false,
       safeMode, maxAdds: safeMode ? SAFE_MAX_ADDS : 0,
     };
     const job = s.addJob;
@@ -680,33 +699,26 @@ class TelegramBotEngine {
       job.scrapePhase = false;
       job.currentSource = null;
       job.members = allMembers;
-      job.total = allMembers.length;
-      job.log.push({ status: "info", msg: `🚀 Starting add job for ${allMembers.length} unique members…`, at: Date.now() });
+      job.total = allMembers.length * (job.targets?.length || 1);
+      const tCount = job.targets?.length || 1;
+      job.log.push({ status: "info", msg: tCount > 1
+        ? `🚀 Adding ${allMembers.length} unique members to ${tCount} targets: ${job.targets.map((t: any) => t.label).join(", ")}`
+        : `🚀 Starting add job for ${allMembers.length} unique members…`, at: Date.now() });
       this._addNext(s);
     })();
   }
 
-  async startAddJob(targetGroup: string, members: Array<{ username: string | null; phone: string | null; name: string; id: string }>, options: { noCooldown?: boolean; safeMode?: boolean; maxAdds?: number } = {}, accountId?: string) {
+  async startAddJob(targetGroup: string | string[], members: Array<{ username: string | null; phone: string | null; name: string; id: string }>, options: { noCooldown?: boolean; safeMode?: boolean; maxAdds?: number } = {}, accountId?: string) {
     const s = this.requireConnectedSession(accountId);
     const client = s.client!;
     if (s.addJob.active) throw new Error("An add job is already running on this account — stop it first");
     if (!members.length) throw new Error("No members provided");
 
-    const normalized = this._normalizeGroupLink(targetGroup);
-    if (/^(joinchat\/|\+)/i.test(normalized)) {
-      throw new Error("Private invite links not supported. Use the group's public @username.");
-    }
-
-    let targetEntity: any;
-    try {
-      targetEntity = await client.getEntity(normalized);
-    } catch (e: any) {
-      throw new Error(`Could not find target group/channel: ${e?.errorMessage || e?.message || "unknown"}`);
-    }
+    const targets = await this._resolveTargets(client, targetGroup);
 
     s.addJob = {
-      active: true, total: members.length, added: 0, failed: 0, privacy: 0, index: 0,
-      members, targetEntity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
+      active: true, total: members.length * targets.length, added: 0, failed: 0, privacy: 0, index: 0,
+      members, targets, targetEntity: targets[0].entity, timer: null, log: [], floodWait: 0, startTime: Date.now(),
       noCooldown: options.safeMode ? false : options.noCooldown !== false,
       peerFloodStop: false, fatalStop: false,
       safeMode: !!options.safeMode,
@@ -715,6 +727,9 @@ class TelegramBotEngine {
         : (options.maxAdds || 0),
       scrapePhase: false, currentSource: null, sourcesTotal: 0, sourcesDone: 0,
     };
+    if (targets.length > 1) {
+      s.addJob.log.push({ status: "info", msg: `🎯 Adding ${members.length} members to ${targets.length} targets: ${targets.map(t => t.label).join(", ")}`, at: Date.now() });
+    }
     this._addNext(s);
   }
 
@@ -723,9 +738,18 @@ class TelegramBotEngine {
     if (!job.active) return;
     const client = s.client;
     if (!client) { job.active = false; return; }
-    const { members, index, targetEntity } = job;
+    const { members, index } = job;
 
-    if (index >= members.length) {
+    // The same member list is added into each target in turn. We keep a single
+    // cumulative `index` over (members × targets) and derive the current target
+    // and member from it, so all existing progress math keeps working.
+    const targets: Array<{ entity: any; label: string }> = (job.targets && job.targets.length)
+      ? job.targets
+      : [{ entity: job.targetEntity, label: "target" }];
+    const perTarget = members.length;
+    const totalAttempts = perTarget * targets.length;
+
+    if (perTarget === 0 || index >= totalAttempts) {
       job.active = false;
       job.log.push({ status: "done", msg: `✅ Finished. Added: ${job.added}, Privacy restricted: ${job.privacy}, Failed: ${job.failed}`, at: Date.now() });
       return;
@@ -739,7 +763,16 @@ class TelegramBotEngine {
       return;
     }
 
-    const member = members[index];
+    const targetIndex = Math.floor(index / perTarget);
+    const withinIndex = index % perTarget;
+    const targetEntity = targets[targetIndex].entity;
+
+    // Announce each new target when adding to more than one.
+    if (targets.length > 1 && withinIndex === 0) {
+      job.log.push({ status: "info", msg: `📍 Target ${targetIndex + 1}/${targets.length}: ${targets[targetIndex].label}`, at: Date.now() });
+    }
+
+    const member = members[withinIndex];
     job.index++;
 
     (async () => {
@@ -853,13 +886,13 @@ class TelegramBotEngine {
           // a higher ban risk on an already-flagged account.
           if (job.safeMode) job.peerFloodStop = true;
         } else if (msg.includes("USERS_TOO_MUCH")) {
-          // Target is full — affects every remaining member, so stop instead of
-          // failing through the whole list.
+          // Target is full — affects every remaining member for THIS target, so
+          // skip the rest of it and move on to the next target (if any).
           logEntry.status = "failed";
           logEntry.error = "Target group is full";
           job.failed++;
-          job.fatalStop = true;
-          job.fatalMsg = `⛔ Stopped: the target group/channel is full — it reached Telegram's member limit (USERS_TOO_MUCH) and can't accept more members. Basic groups cap at 200 members; convert it to a public supergroup or use one that isn't full. Added: ${job.added}.`;
+          job.skipTarget = true;
+          job.skipMsg = `⛔ "${targets[targetIndex].label}" is full — it hit Telegram's member limit (USERS_TOO_MUCH / basic groups cap at 200). Skipping it. Added so far: ${job.added}.`;
         } else if (
           msg.includes("CHAT_WRITE_FORBIDDEN") ||
           msg.includes("CHAT_ADMIN_REQUIRED") ||
@@ -867,12 +900,13 @@ class TelegramBotEngine {
           msg.includes("CHANNEL_PRIVATE") ||
           msg.includes("USER_NOT_PARTICIPANT")
         ) {
-          // Target-level permission problem: it affects every member, so don't
-          // burn through the whole list — stop the job and explain why.
+          // Target-level permission problem: it affects every member for THIS
+          // target, so skip the rest of it and move on instead of burning the list.
           logEntry.status = "failed";
           logEntry.error = "No permission to add to this group";
           job.failed++;
-          job.fatalStop = true;
+          job.skipTarget = true;
+          job.skipMsg = `⛔ This account can't add to "${targets[targetIndex].label}" — it must be a member AND admin there with "Add members" permission. Skipping it. Added so far: ${job.added}.`;
         } else if (msg.includes("USER_BOT")) {
           logEntry.status = "skipped";
           logEntry.error = "User is a bot";
@@ -890,6 +924,18 @@ class TelegramBotEngine {
       if (job.fatalStop) {
         job.active = false;
         job.log.push({ status: "stopped", msg: job.fatalMsg || `⛔ Stopped: this account can't add members to the target group/channel. The connected Telegram account must be a member AND an admin there with "Add members" permission. (Telegram may also temporarily block adding if the account was recently rate-limited.) Added: ${job.added}.`, at: Date.now() });
+        return;
+      }
+      // A target-level problem (full / no permission) only affects the CURRENT
+      // target. Skip the rest of its members and jump to the next target. If it
+      // was the last one, that lands past totalAttempts and the job finishes.
+      if (job.skipTarget) {
+        job.skipTarget = false;
+        const isLast = targetIndex >= targets.length - 1;
+        job.log.push({ status: isLast ? "stopped" : "info", msg: job.skipMsg || `⏭️ Skipping "${targets[targetIndex].label}".`, at: Date.now() });
+        job.skipMsg = "";
+        job.index = (targetIndex + 1) * perTarget; // jump to start of next target
+        job.timer = setTimeout(() => this._addNext(s), 300);
         return;
       }
       // Stop immediately if Telegram flagged the account (PEER_FLOOD) — hammering risks a ban.
@@ -931,6 +977,20 @@ class TelegramBotEngine {
       currentSource: j.currentSource || null,
       sourcesTotal: j.sourcesTotal || 0,
       sourcesDone: j.sourcesDone || 0,
+      targetsTotal: j.targets?.length || (j.targetEntity ? 1 : 0),
+      targetIndex: (() => {
+        const per = j.members?.length || 0;
+        const tCount = j.targets?.length || 1;
+        if (per <= 0) return 0;
+        return Math.min(Math.floor(j.index / per), tCount - 1);
+      })(),
+      currentTarget: (() => {
+        const per = j.members?.length || 0;
+        const tCount = j.targets?.length || 1;
+        if (!j.targets?.length || per <= 0) return null;
+        const ti = Math.min(Math.floor(j.index / per), tCount - 1);
+        return j.targets[ti]?.label || null;
+      })(),
     };
   }
 

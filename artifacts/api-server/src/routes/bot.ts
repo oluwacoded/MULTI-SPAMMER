@@ -198,13 +198,21 @@ router.post("/scrape/add-stop", (req, res) => {
   res.json({ ok: true, message: "Add job stopped" });
 });
 
-// Scrape one or more source groups then add all members to target group.
-// Accepts: { targetGroup, sourceGroups: string[], limit?, members? }
+// Scrape one or more source groups then add all members to one or more targets.
+// Accepts: { targetGroups: string[], sourceGroups: string[], limit?, members? }
 // Also accepts legacy single: { targetGroup, sourceGroup: string, limit?, members? }
 router.post("/scrape/add-members", async (req, res) => {
   const bot = getBotInstance();
-  const { sourceGroup, sourceGroups, targetGroup, limit, members, noCooldown, safeMode, accountId } = req.body;
-  if (!targetGroup) return res.status(400).json({ ok: false, message: "targetGroup required" });
+  const { sourceGroup, sourceGroups, targetGroup, targetGroups, limit, members, noCooldown, safeMode, accountId } = req.body;
+
+  // Build the list of target groups (new array path, fallback to legacy single)
+  const targets: string[] = [];
+  if (Array.isArray(targetGroups) && targetGroups.length) {
+    targets.push(...targetGroups.filter((s: string) => s?.trim()));
+  } else if (typeof targetGroup === "string" && targetGroup.trim()) {
+    targets.push(targetGroup.trim());
+  }
+  if (!targets.length) return res.status(400).json({ ok: false, message: "targetGroups required" });
 
   const maxLimit = Math.min(parseInt(limit) || 5000, 10000);
 
@@ -219,11 +227,11 @@ router.post("/scrape/add-members", async (req, res) => {
   try {
     if (sources.length > 0) {
       // Multi-source (or single-source via new path): scrape then add
-      await bot.startMultiSourceAddJob(targetGroup, sources, maxLimit, members?.length ? members : undefined, accountId, !!safeMode);
+      await bot.startMultiSourceAddJob(targets, sources, maxLimit, members?.length ? members : undefined, accountId, !!safeMode);
       res.json({ ok: true, message: `Scrape & add started for ${sources.length} source group${sources.length > 1 ? "s" : ""}` });
     } else if (members?.length) {
       // Pre-loaded members (from the manual scrape flow) — add directly
-      await bot.startAddJob(targetGroup, members, { safeMode: !!safeMode }, accountId);
+      await bot.startAddJob(targets, members, { safeMode: !!safeMode }, accountId);
       res.json({ ok: true, message: `Add job started for ${members.length} members` });
     } else {
       res.status(400).json({ ok: false, message: "Provide sourceGroups, sourceGroup, or a members array" });
@@ -233,11 +241,17 @@ router.post("/scrape/add-members", async (req, res) => {
   }
 });
 
-// Add contacts from a saved contact list to a target group
+// Add contacts from a saved contact list to one or more target groups
 router.post("/scrape/add-from-list", async (req, res) => {
   const bot = getBotInstance();
-  const { listId, targetGroup, noCooldown, safeMode, accountId } = req.body;
-  if (!listId || !targetGroup) return res.status(400).json({ ok: false, message: "listId and targetGroup required" });
+  const { listId, targetGroup, targetGroups, noCooldown, safeMode, accountId } = req.body;
+  const targets: string[] = [];
+  if (Array.isArray(targetGroups) && targetGroups.length) {
+    targets.push(...targetGroups.filter((s: string) => s?.trim()));
+  } else if (typeof targetGroup === "string" && targetGroup.trim()) {
+    targets.push(targetGroup.trim());
+  }
+  if (!listId || !targets.length) return res.status(400).json({ ok: false, message: "listId and targetGroups required" });
   const list = readSubdirItem<any>("contact-lists", listId, null);
   if (!list) return res.status(404).json({ ok: false, message: "Contact list not found" });
   const contacts: any[] = list.contacts || [];
@@ -249,7 +263,7 @@ router.post("/scrape/add-from-list", async (req, res) => {
     id: c.id || "",
   }));
   try {
-    await bot.startAddJob(targetGroup, members, { safeMode: !!safeMode, noCooldown: noCooldown !== false }, accountId);
+    await bot.startAddJob(targets, members, { safeMode: !!safeMode, noCooldown: noCooldown !== false }, accountId);
     res.json({ ok: true, message: `Add job started for ${members.length} contacts from "${list.name}"` });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });

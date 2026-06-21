@@ -6,6 +6,7 @@ import { AccountSelector } from "@/components/AccountSelector";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -17,6 +18,11 @@ import { Users, Download, Search, Loader2, Info, Save, AlertTriangle, Phone, AtS
 import { cn } from "@/lib/utils";
 
 interface Member { username: string | null; phone: string | null; name: string; id: string; }
+
+// Targets can be entered comma- or newline-separated; split, trim and dedupe.
+function parseTargets(raw: string): string[] {
+  return Array.from(new Set(raw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean)));
+}
 
 export default function TgScraper() {
   const { toast } = useToast();
@@ -83,7 +89,7 @@ export default function TgScraper() {
 
   // Multi-source scrape & add
   const startAddDirect = useMutation({
-    mutationFn: (data: { sourceGroups: string[]; targetGroup: string; limit: number }) =>
+    mutationFn: (data: { sourceGroups: string[]; targetGroups: string[]; limit: number }) =>
       apiPost("/scrape/add-members", { ...data, safeMode, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
@@ -97,7 +103,7 @@ export default function TgScraper() {
   });
 
   const startAdd = useMutation({
-    mutationFn: (data: { targetGroup: string; members: Member[] }) =>
+    mutationFn: (data: { targetGroups: string[]; members: Member[] }) =>
       apiPost("/scrape/add-members", { ...data, safeMode, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
@@ -119,7 +125,7 @@ export default function TgScraper() {
   });
 
   const startAddFromList = useMutation({
-    mutationFn: (data: { listId: string; targetGroup: string }) =>
+    mutationFn: (data: { listId: string; targetGroups: string[] }) =>
       apiPost("/scrape/add-from-list", { ...data, safeMode, accountId }),
     onSuccess: (res: any) => {
       if (res.ok) {
@@ -359,15 +365,19 @@ export default function TgScraper() {
                   )}
                 </div>
 
-                {/* Target group */}
+                {/* Target group(s) */}
                 <div>
-                  <Label className="text-xs text-muted-foreground">Your target group/channel</Label>
-                  <Input
+                  <Label className="text-xs text-muted-foreground">Your target group(s)/channel(s)</Label>
+                  <Textarea
                     value={scrapeAddTarget}
                     onChange={e => setScrapeAddTarget(e.target.value)}
-                    placeholder="@mygroup or t.me/…"
+                    placeholder="@mygroup or t.me/… — one per line or comma-separated for multiple"
+                    rows={2}
                     className="mt-1 font-mono text-xs"
                   />
+                  {parseTargets(scrapeAddTarget).length > 1 && (
+                    <p className="text-[11px] text-muted-foreground mt-1">Will add to {parseTargets(scrapeAddTarget).length} targets, one after another.</p>
+                  )}
                 </div>
 
                 <div className="flex items-end gap-2">
@@ -377,8 +387,8 @@ export default function TgScraper() {
                   </div>
                   <Button
                     className="flex-1"
-                    onClick={() => startAddDirect.mutate({ sourceGroups, targetGroup: scrapeAddTarget.trim(), limit: parseInt(limit) || 5000 })}
-                    disabled={!connected || sourceGroups.length === 0 || !scrapeAddTarget.trim() || startAddDirect.isPending}
+                    onClick={() => startAddDirect.mutate({ sourceGroups, targetGroups: parseTargets(scrapeAddTarget), limit: parseInt(limit) || 5000 })}
+                    disabled={!connected || sourceGroups.length === 0 || parseTargets(scrapeAddTarget).length === 0 || startAddDirect.isPending}
                   >
                     {startAddDirect.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
                     {startAddDirect.isPending ? "Starting…" : `Scrape & Add${sourceGroups.length > 1 ? ` (${sourceGroups.length} sources)` : ""}`}
@@ -444,21 +454,25 @@ export default function TgScraper() {
               ) : (
                 <>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Your group/channel @username or link</Label>
-                    <Input
+                    <Label className="text-xs text-muted-foreground">Your group(s)/channel(s) @username or link</Label>
+                    <Textarea
                       value={targetGroup}
                       onChange={e => setTargetGroup(e.target.value)}
-                      placeholder="@mygroup or https://t.me/mygroup"
+                      placeholder="@mygroup or https://t.me/mygroup — one per line or comma-separated for multiple"
+                      rows={2}
                       className="mt-1 font-mono text-sm"
                     />
+                    {parseTargets(targetGroup).length > 1 && (
+                      <p className="text-[11px] text-muted-foreground mt-1">Will add to {parseTargets(targetGroup).length} targets, one after another.</p>
+                    )}
                   </div>
                   <Button
                     className="w-full"
-                    onClick={() => startAdd.mutate({ targetGroup: targetGroup.trim(), members })}
-                    disabled={!targetGroup.trim() || startAdd.isPending || !connected}
+                    onClick={() => startAdd.mutate({ targetGroups: parseTargets(targetGroup), members })}
+                    disabled={parseTargets(targetGroup).length === 0 || startAdd.isPending || !connected}
                   >
                     {startAdd.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
-                    {startAdd.isPending ? "Starting…" : `Add ${members.length} Members`}
+                    {startAdd.isPending ? "Starting…" : `Add ${members.length} Members${parseTargets(targetGroup).length > 1 ? ` × ${parseTargets(targetGroup).length}` : ""}`}
                   </Button>
                   <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50">
                     <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
@@ -519,18 +533,22 @@ export default function TgScraper() {
                       </Select>
                     </div>
                     <div>
-                      <Label className="text-xs text-muted-foreground">Target group/channel</Label>
-                      <Input
+                      <Label className="text-xs text-muted-foreground">Target group(s)/channel(s)</Label>
+                      <Textarea
                         value={addListTarget}
                         onChange={e => setAddListTarget(e.target.value)}
-                        placeholder="@mygroup or https://t.me/mygroup"
+                        placeholder="@mygroup or https://t.me/mygroup — one per line or comma-separated for multiple"
+                        rows={2}
                         className="mt-1 font-mono text-sm"
                       />
+                      {parseTargets(addListTarget).length > 1 && (
+                        <p className="text-[11px] text-muted-foreground mt-1">Will add to {parseTargets(addListTarget).length} targets, one after another.</p>
+                      )}
                     </div>
                     <Button
                       className="w-full"
-                      onClick={() => startAddFromList.mutate({ listId: addListId, targetGroup: addListTarget.trim() })}
-                      disabled={!addListId || !addListTarget.trim() || startAddFromList.isPending || !connected}
+                      onClick={() => startAddFromList.mutate({ listId: addListId, targetGroups: parseTargets(addListTarget) })}
+                      disabled={!addListId || parseTargets(addListTarget).length === 0 || startAddFromList.isPending || !connected}
                     >
                       {startAddFromList.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <UserPlus className="w-4 h-4 mr-2" />}
                       {startAddFromList.isPending ? "Starting…" : "Start Adding"}
@@ -573,6 +591,9 @@ function AddJobProgress({ status, onStop, stopping, onDismiss }: { status: any; 
   const currentSource = status?.currentSource ?? null;
   const sourcesTotal = status?.sourcesTotal ?? 0;
   const sourcesDone = status?.sourcesDone ?? 0;
+  const targetsTotal = status?.targetsTotal ?? 0;
+  const targetIndex = status?.targetIndex ?? 0;
+  const currentTarget = status?.currentTarget ?? null;
 
   return (
     <div className="space-y-3">
@@ -585,6 +606,11 @@ function AddJobProgress({ status, onStop, stopping, onDismiss }: { status: any; 
           {scrapePhase && sourcesTotal > 0 && (
             <Badge variant="outline" className="text-blue-400 border-blue-400/40 text-xs">
               {sourcesDone}/{sourcesTotal} scraped
+            </Badge>
+          )}
+          {!scrapePhase && targetsTotal > 1 && (
+            <Badge variant="outline" className="text-purple-400 border-purple-400/40 text-xs">
+              Target {Math.min(targetIndex + 1, targetsTotal)}/{targetsTotal}
             </Badge>
           )}
           {(status?.floodWait ?? 0) > 0 && (
@@ -601,6 +627,14 @@ function AddJobProgress({ status, onStop, stopping, onDismiss }: { status: any; 
         <div className="flex items-center gap-2 p-2 rounded-md bg-blue-500/5 border border-blue-500/20">
           <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin shrink-0" />
           <p className="text-xs text-blue-300 font-mono truncate">{currentSource}</p>
+        </div>
+      )}
+
+      {/* Add phase: show which target is currently being filled (multi-target) */}
+      {!scrapePhase && active && targetsTotal > 1 && currentTarget && (
+        <div className="flex items-center gap-2 p-2 rounded-md bg-purple-500/5 border border-purple-500/20">
+          <UserPlus className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+          <p className="text-xs text-purple-300 font-mono truncate">Adding to: {currentTarget}</p>
         </div>
       )}
 
