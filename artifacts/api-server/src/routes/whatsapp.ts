@@ -22,6 +22,18 @@ router.post("/whatsapp/logout", async (_req, res) => {
   res.json({ ok: true, message: "Logged out" });
 });
 
+// Request a pairing code to link WhatsApp by phone number (no QR scan).
+router.post("/whatsapp/pair", async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ ok: false, message: "phone required" });
+  try {
+    const code = await getWhatsAppEngine().requestPairingCode(String(phone));
+    res.json({ ok: true, code });
+  } catch (e: any) {
+    res.json({ ok: false, message: e.message });
+  }
+});
+
 router.get("/whatsapp/campaign/status", (_req, res) => {
   res.json(getWhatsAppEngine().getCampaignStatus());
 });
