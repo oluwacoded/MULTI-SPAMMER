@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { restoreConfigToDisk } from "./lib/configStore";
 import { getBotInstance } from "./lib/botInstance";
+import { startControlBot } from "./lib/controlBot";
 
 const rawPort = process.env["PORT"];
 
@@ -54,6 +55,12 @@ async function main() {
       getBotInstance();
     } catch (err) {
       logger.error({ err }, "Bot engine failed to initialise");
+    }
+    // Start the Telegram control bot (no-op if its token isn't configured).
+    try {
+      startControlBot();
+    } catch (err) {
+      logger.error({ err }, "Control bot failed to start");
     }
   });
 }

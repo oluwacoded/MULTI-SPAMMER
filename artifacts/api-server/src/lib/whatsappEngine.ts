@@ -95,6 +95,32 @@ class WhatsAppEngine {
     }
   }
 
+  // Request an 8-character pairing code so the user can link WhatsApp by typing
+  // a code on their phone instead of scanning a QR. Baileys requires the socket
+  // to exist and the account to be unregistered; the code must be requested
+  // shortly after the socket comes up.
+  async requestPairingCode(phone: string): Promise<string> {
+    const digits = (phone || "").replace(/\D/g, "");
+    if (!digits || digits.length < 8) {
+      throw new Error("Send your full phone number with country code, e.g. 15551234567");
+    }
+    if (this.connected) throw new Error("WhatsApp is already connected");
+    if (!this.sock) {
+      await this.connect();
+      // Give Baileys a moment to bring the socket up before requesting a code.
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!this.sock) throw new Error("WhatsApp socket not ready — try again in a few seconds");
+    if (this.sock.authState?.creds?.registered) {
+      throw new Error("This session is already registered");
+    }
+    if (typeof this.sock.requestPairingCode !== "function") {
+      throw new Error("Pairing code not supported by this WhatsApp version — use the QR code");
+    }
+    const code = await this.sock.requestPairingCode(digits);
+    return code;
+  }
+
   async logout(): Promise<void> {
     try { if (this.sock) await this.sock.logout(); } catch {}
     this.sock = null;
