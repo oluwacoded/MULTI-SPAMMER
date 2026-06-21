@@ -22,3 +22,15 @@ flagged; capping and slowing both down is what keeps healthy accounts healthy.
 **How to apply:** the Scraper page exposes a Safe/Turbo toggle that passes
 `safeMode` to all add endpoints; safe is the default. Turbo keeps the old
 fast-as-Telegram-allows behavior for users who accept the ban risk.
+
+## Turbo continues through PEER_FLOOD; safe stops (do not "fix" this)
+The add loop's PEER_FLOOD branch sets `job.peerFloodStop` ONLY when `job.safeMode`
+is true. In turbo (the default) it marks the member failed and continues to the
+next — this is the ORIGINAL behavior the user relied on ("it kept adding through
+the flood, 100→450"). A prior edit had made PEER_FLOOD hard-stop the whole job on
+the first hit, which the user (correctly) reported as a regression vs. before.
+**Why:** the user explicitly wants the keep-going behavior and accepts the higher
+ban risk; stopping on the first flood made fresh accounts show "0 added" and quit.
+**How to apply:** don't reintroduce an unconditional PEER_FLOOD stop. Keep it
+gated behind safeMode. Note this does NOT bypass the limit — flagged accounts may
+still add few/none — it just doesn't abort the run.

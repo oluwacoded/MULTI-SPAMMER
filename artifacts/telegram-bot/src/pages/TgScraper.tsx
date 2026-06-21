@@ -28,7 +28,7 @@ export default function TgScraper() {
   const [limit, setLimit] = useState("5000");
   // Add pacing: "safe" adds slowly with a per-run cap (much less likely to trip
   // Telegram's PEER_FLOOD limit); "turbo" adds as fast as Telegram allows.
-  const [addMode, setAddMode] = useState<"safe" | "turbo">("safe");
+  const [addMode, setAddMode] = useState<"safe" | "turbo">("turbo");
   const safeMode = addMode === "safe";
   const [members, setMembers] = useState<Member[]>([]);
   const [saveDialog, setSaveDialog] = useState(false);

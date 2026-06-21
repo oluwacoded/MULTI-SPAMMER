@@ -847,7 +847,11 @@ class TelegramBotEngine {
           logEntry.status = "failed";
           logEntry.error = "PEER_FLOOD — account limited";
           job.failed++;
-          job.peerFloodStop = true;
+          // Safe mode protects the account by stopping on the first PEER_FLOOD.
+          // Turbo keeps going to the next member (the original behavior) — some
+          // adds can still land; this is the user's explicit choice and carries
+          // a higher ban risk on an already-flagged account.
+          if (job.safeMode) job.peerFloodStop = true;
         } else if (msg.includes("USERS_TOO_MUCH")) {
           // Target is full — affects every remaining member, so stop instead of
           // failing through the whole list.
