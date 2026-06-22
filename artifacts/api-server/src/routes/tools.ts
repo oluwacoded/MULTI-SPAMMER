@@ -111,21 +111,104 @@ function normalizeUrl(input: string): URL | null {
   }
 }
 
+// ─── SSRF defenses ────────────────────────────────────────────────────────────
+// The scraper fetches arbitrary user-supplied URLs, so it must never be allowed
+// to reach internal/loopback/link-local/metadata addresses. We resolve each host
+// to its IPs and reject any non-public range — re-checking on every redirect hop.
+
+const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2 MB cap per page
+const MAX_REDIRECTS = 4;
+
+function ipv4Blocked(ip: string): boolean {
+  const p = ip.split(".").map(Number);
+  if (p.length !== 4 || p.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return true;
+  const [a, b] = p as [number, number, number, number];
+  if (a === 0 || a === 10 || a === 127) return true; // this-host, private, loopback
+  if (a === 169 && b === 254) return true; // link-local (incl. 169.254.169.254 metadata)
+  if (a === 172 && b >= 16 && b <= 31) return true; // private
+  if (a === 192 && b === 168) return true; // private
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a === 192 && b === 0) return true; // 192.0.0.0/24 reserved
+  if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
+  if (a >= 224) return true; // multicast + reserved (224.0.0.0/3)
+  return false;
+}
+
+function ipBlocked(ip: string): boolean {
+  const addr = ip.toLowerCase();
+  if (addr.includes(".") && !addr.includes(":")) return ipv4Blocked(addr);
+  // IPv6 (or IPv4-mapped IPv6)
+  if (addr === "::1" || addr === "::") return true;
+  const mapped = addr.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) return ipv4Blocked(mapped[1]!);
+  if (addr.startsWith("fe80") || addr.startsWith("fc") || addr.startsWith("fd")) return true; // link-local / ULA
+  if (addr.startsWith("ff")) return true; // multicast
+  return false;
+}
+
+// Resolve the host and ensure EVERY resolved address is a public IP.
+async function assertPublicHost(hostname: string): Promise<boolean> {
+  const host = hostname.replace(/^\[|\]$/g, "");
+  // A literal IP in the URL: check directly (no DNS to trust).
+  if (/^[\d.]+$/.test(host) || host.includes(":")) return !ipBlocked(host);
+  try {
+    const addrs = await dns.lookup(host, { all: true });
+    if (!addrs.length) return false;
+    return addrs.every((a) => !ipBlocked(a.address));
+  } catch {
+    return false;
+  }
+}
+
+async function readCappedText(r: Response): Promise<string> {
+  if (!r.body) return await r.text();
+  const reader = r.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.byteLength;
+      if (total > MAX_BODY_BYTES) {
+        await reader.cancel().catch(() => {});
+        break;
+      }
+      chunks.push(value);
+    }
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+}
+
 async function fetchHtml(url: string, ms = 12000): Promise<string> {
   try {
-    const r = await fetch(url, {
-      signal: AbortSignal.timeout(ms),
-      redirect: "follow",
-      headers: {
-        "user-agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        accept: "text/html,application/xhtml+xml",
-      },
-    });
-    if (!r.ok) return "";
-    const ct = r.headers.get("content-type") || "";
-    if (!ct.includes("text/html") && !ct.includes("text/plain")) return "";
-    return await r.text();
+    let current = normalizeUrl(url);
+    for (let hop = 0; current && hop <= MAX_REDIRECTS; hop++) {
+      if (current.protocol !== "http:" && current.protocol !== "https:") return "";
+      if (!(await assertPublicHost(current.hostname))) return "";
+      const r: Response = await fetch(current.href, {
+        signal: AbortSignal.timeout(ms),
+        redirect: "manual",
+        headers: {
+          "user-agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+          accept: "text/html,application/xhtml+xml",
+        },
+      });
+      if (r.status >= 300 && r.status < 400) {
+        const loc = r.headers.get("location");
+        if (!loc) return "";
+        current = new URL(loc, current); // re-validated at top of next loop
+        continue;
+      }
+      if (!r.ok) return "";
+      const ct = r.headers.get("content-type") || "";
+      if (!ct.includes("text/html") && !ct.includes("text/plain")) return "";
+      const len = Number(r.headers.get("content-length") || 0);
+      if (len > MAX_BODY_BYTES) return "";
+      return await readCappedText(r);
+    }
+    return "";
   } catch {
     return "";
   }

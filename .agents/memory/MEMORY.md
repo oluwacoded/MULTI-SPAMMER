@@ -5,3 +5,4 @@
 - [Telegram control bot](control-bot.md) — grammy Bot-API bot drives engines from Telegram; externalize grammy in build.mjs; add-status field is `active` not `running`; owner-gate fail-closed; bot.start() never awaited.
 - [VM deployment resilience](vm-deployment-resilience.md) — recurring VM outages came from unguarded background async crashing the single Node process; add process-level handlers that log+stay alive, and a cheap always-200 `/api` health route.
 - [Telegram PEER_FLOOD](telegram-peer-flood.md) — server-side add limit, NO code bypass exists; only mitigation is slow pacing + small per-run cap ("safe mode", default in scraper) and resting/aged accounts.
+- [Scraper SSRF protection](scraper-ssrf.md) — any server-side fetch of user-supplied URLs must resolve+block private/metadata IPs, re-check each redirect hop, and cap body size (no app auth + VM).
