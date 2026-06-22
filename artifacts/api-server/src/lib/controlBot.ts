@@ -31,7 +31,9 @@ type FlowName =
   | "tg_login_2fa"
   | "gmail_subject"
   | "gmail_body"
-  | "gmail_recipients";
+  | "gmail_recipients"
+  | "email_verify_input"
+  | "email_scrape_input";
 
 interface FlowState {
   flow: FlowName;
@@ -50,6 +52,7 @@ const B = {
   telegram: "✈️ Telegram",
   whatsapp: "📱 WhatsApp",
   gmail: "📧 Gmail",
+  email: "📨 Email tools",
   help: "❓ Help",
   admin: "🛠 Admin",
   redeem: "🔑 Enter access code",
@@ -64,6 +67,8 @@ function mainKeyboard(isAdmin: boolean) {
     .text(B.whatsapp)
     .row()
     .text(B.gmail)
+    .text(B.email)
+    .row()
     .text(B.help)
     .row();
   if (isAdmin) k.text(B.admin);
@@ -102,6 +107,12 @@ function gmailMenu() {
     .row()
     .text("📈 Status", "gmail_status");
 }
+function emailMenu() {
+  return new InlineKeyboard()
+    .text("✅ Verify emails", "email_verify")
+    .row()
+    .text("🌐 Scrape websites", "email_scrape");
+}
 function adminMenu() {
   return new InlineKeyboard()
     .text("🎟 New access code", "admin_token")
@@ -116,6 +127,8 @@ function helpMenu() {
     .text("📱 WhatsApp", "h_wa")
     .row()
     .text("📧 Gmail", "h_gmail")
+    .row()
+    .text("📨 Email tools", "h_email")
     .row()
     .text("🔑 Access codes", "h_access");
 }
@@ -228,6 +241,99 @@ async function gmStatusText(): Promise<string> {
     ? `\nLast run: ${s.sent} sent, ${s.failed} failed`
     : "";
   return `📧 <b>Gmail</b>\n${cfg}${camp}`;
+}
+
+// ─── Email tools (Verify + Scrape) ───────────────────────────────────────────
+// Pure server-side tools (no Telegram/WhatsApp connection needed). Small results
+// are shown inline; large ones come back as a .txt file so the chat stays clean.
+function emailLine(x: any): string {
+  return `${x.valid ? "🟢" : "🔴"} ${esc(x.email)}${x.valid ? "" : " — " + esc(x.reason)}`;
+}
+
+async function runEmailVerify(ctx: any, input: string): Promise<void> {
+  const isAdmin = !!ctx.isAdmin;
+  await ctx.reply("⏳ Checking emails…");
+  const r = await api("POST", "/tools/verify-emails", { emails: input });
+  if (r.ok === false) {
+    await ctx.reply("❌ " + esc(r.message || "Couldn't verify."), {
+      reply_markup: mainKeyboard(isAdmin),
+    });
+    return;
+  }
+  const results: any[] = r.results || [];
+  const summary =
+    "✅ <b>Email check</b>\n━━━━━━━━━━━━━\n" +
+    `Checked <b>${r.total}</b> · 🟢 ${r.validCount} valid · 🔴 ${r.invalidCount} bad`;
+  if (results.length <= 25) {
+    await ctx.reply(summary + "\n\n" + results.map(emailLine).join("\n"), {
+      parse_mode: "HTML",
+      reply_markup: mainKeyboard(isAdmin),
+    });
+    return;
+  }
+  await ctx.reply(summary, { parse_mode: "HTML", reply_markup: mainKeyboard(isAdmin) });
+  const body =
+    `MFG — Email verification\n${new Date().toISOString()}\n` +
+    `Total ${r.total} · Valid ${r.validCount} · Invalid ${r.invalidCount}\n\n` +
+    `=== VALID (${(r.validEmails || []).length}) ===\n` +
+    (r.validEmails || []).join("\n") +
+    `\n\n=== ALL RESULTS ===\n` +
+    results.map((x) => `${x.valid ? "OK " : "X  "}${x.email} — ${x.reason}`).join("\n");
+  await ctx
+    .replyWithDocument(new InputFile(Buffer.from(body, "utf8"), "email-verification.txt"), {
+      caption: `🟢 ${r.validCount} valid of ${r.total}.`,
+    })
+    .catch((e: any) => logger.error({ err: e }, "verify file"));
+}
+
+async function runEmailScrape(ctx: any, input: string): Promise<void> {
+  const isAdmin = !!ctx.isAdmin;
+  await ctx.reply("⏳ Scraping websites… this can take a moment.");
+  const r = await api("POST", "/tools/scrape-emails", { urls: input });
+  if (r.ok === false) {
+    await ctx.reply("❌ " + esc(r.message || "Couldn't scrape."), {
+      reply_markup: mainKeyboard(isAdmin),
+    });
+    return;
+  }
+  const all: string[] = r.allEmails || [];
+  const summary =
+    "🌐 <b>Website scrape</b>\n━━━━━━━━━━━━━\n" +
+    `Scanned <b>${r.sites}</b> site(s) · 📧 ${r.emailCount} email(s) found`;
+  if (!all.length) {
+    await ctx.reply(summary + "\n\nNo public emails found on those sites.", {
+      parse_mode: "HTML",
+      reply_markup: mainKeyboard(isAdmin),
+    });
+    return;
+  }
+  if (all.length <= 30) {
+    await ctx.reply(summary + "\n\n" + all.map((e) => "📧 " + esc(e)).join("\n"), {
+      parse_mode: "HTML",
+      reply_markup: mainKeyboard(isAdmin),
+    });
+    return;
+  }
+  await ctx.reply(summary, { parse_mode: "HTML", reply_markup: mainKeyboard(isAdmin) });
+  const results: any[] = r.results || [];
+  const body =
+    `MFG — Scraped emails\n${new Date().toISOString()}\n` +
+    `Sites ${r.sites} · Emails ${r.emailCount}\n\n` +
+    `=== ALL EMAILS (${all.length}) ===\n` +
+    all.join("\n") +
+    `\n\n=== BY SITE ===\n` +
+    results
+      .map(
+        (s) =>
+          `\n# ${s.site} (${(s.emails || []).length})\n` +
+          ((s.emails || []).join("\n") || s.error || "none"),
+      )
+      .join("\n");
+  await ctx
+    .replyWithDocument(new InputFile(Buffer.from(body, "utf8"), "scraped-emails.txt"), {
+      caption: `📧 ${r.emailCount} emails from ${r.sites} site(s).`,
+    })
+    .catch((e: any) => logger.error({ err: e }, "scrape file"));
 }
 
 // ─── Live "board" for Scrape + Add ───────────────────────────────────────────
@@ -429,6 +535,18 @@ const HELP: Record<string, string> = {
     "3) Send the BODY (plain text or HTML).\n" +
     "4) Send the recipient emails (spaces, commas, or new lines).\n" +
     "5) It starts sending — check 📊 Status for progress.",
+  h_email:
+    "📨 <b>Email tools</b>\n\n" +
+    "Two pure-server tools — no Telegram or WhatsApp account needed.\n\n" +
+    "<b>✅ Verify emails</b>\n" +
+    "1) Tap 📨 Email tools → ✅ Verify emails.\n" +
+    "2) Paste the emails (spaces, commas or new lines).\n" +
+    "3) You get how many are valid vs bad (typos, dead domains, throwaway addresses). Big lists come back as a file.\n\n" +
+    "<b>🌐 Scrape websites</b>\n" +
+    "1) Tap 📨 Email tools → 🌐 Scrape websites.\n" +
+    "2) Paste website addresses (a few at a time), e.g. example.com\n" +
+    "3) It pulls public emails from each site's home/contact/about pages.\n\n" +
+    "Tip: scrape first, then verify the results before sending.",
   h_access:
     "🔑 <b>Access codes</b>\n\n" +
     "This bot is private. To use it you need a code from the admin.\n\n" +
@@ -604,6 +722,13 @@ export function startControlBot(): void {
 
   bot.hears(B.gmail, async (ctx) => {
     await ctx.reply(await gmStatusText(), { parse_mode: "HTML", reply_markup: gmailMenu() });
+  });
+
+  bot.hears(B.email, async (ctx) => {
+    await ctx.reply(
+      "📨 <b>Email tools</b>\nVerify a list of emails, or scrape emails from websites. No account needed.",
+      { parse_mode: "HTML", reply_markup: emailMenu() },
+    );
   });
 
   bot.hears(B.admin, async (ctx) => {
@@ -786,6 +911,24 @@ export function startControlBot(): void {
     }
     flows.set(ctx.chat!.id, { flow: "gmail_subject", data: {} });
     await ctx.reply("Send the email SUBJECT:", { reply_markup: cancelKeyboard() });
+  });
+
+  // ── Email tools callbacks ──
+  bot.callbackQuery("email_verify", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    flows.set(ctx.chat!.id, { flow: "email_verify_input", data: {} });
+    await ctx.reply("Paste the emails to check (spaces, commas or new lines):", {
+      reply_markup: cancelKeyboard(),
+    });
+  });
+
+  bot.callbackQuery("email_scrape", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    flows.set(ctx.chat!.id, { flow: "email_scrape_input", data: {} });
+    await ctx.reply(
+      "Paste website addresses to scrape emails from — a few at a time (e.g. example.com):",
+      { reply_markup: cancelKeyboard() },
+    );
   });
 
   // ── Free-text: drive the active flow ──
@@ -981,6 +1124,18 @@ export function startControlBot(): void {
             ctx,
             `✉️ Gmail campaign started for ${recipients.length} recipients. Check 📊 Status.`,
           );
+          break;
+        }
+
+        case "email_verify_input": {
+          flows.delete(chatId);
+          await runEmailVerify(ctx, text);
+          break;
+        }
+
+        case "email_scrape_input": {
+          flows.delete(chatId);
+          await runEmailScrape(ctx, text);
           break;
         }
       }
