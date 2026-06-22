@@ -168,6 +168,15 @@ async function api(method: string, p: string, body?: any): Promise<any> {
     return { ok: false, message: "Backend error (" + (e?.message || e) + ")" };
   }
   const txt = await res.text();
+  const ct = res.headers.get("content-type") || "";
+  // If the backend ever returns a web page (HTML) instead of JSON, never echo the
+  // raw markup into the chat — reply with a clean, short message instead.
+  if (ct.includes("text/html") || /^\s*<(?:!doctype|html)\b/i.test(txt)) {
+    return {
+      ok: false,
+      message: res.ok ? "Unexpected response from the server." : `Server error (${res.status}).`,
+    };
+  }
   let json: any;
   try {
     json = txt ? JSON.parse(txt) : {};

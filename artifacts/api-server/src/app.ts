@@ -49,6 +49,11 @@ if (process.env.NODE_ENV === "production") {
   // Express 5 uses path-to-regexp@8, which throws on a bare "*" path at startup.
   app.use((req, res, next) => {
     if (req.method !== "GET" && req.method !== "HEAD") return next();
+    // Never serve the dashboard HTML for unmatched API calls — return a JSON 404
+    // so clients (e.g. the Telegram control bot) get clean data, not a web page.
+    if (req.path === "/api" || req.path.startsWith("/api/")) {
+      return res.status(404).json({ ok: false, message: "Not found" });
+    }
     res.sendFile(path.join(staticDir, "index.html"));
   });
 }

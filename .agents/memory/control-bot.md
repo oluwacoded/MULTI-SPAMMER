@@ -15,6 +15,8 @@ A second Telegram presence (Bot API via `grammy`) lets the owner run the dashboa
 - **Bot auth is fail-closed.** Requires a valid numeric `TELEGRAM_CONTROL_CHAT_ID`; if missing/NaN the bot refuses to start rather than running unrestricted (anyone who finds the bot could otherwise trigger campaigns/adds). Token in `TELEGRAM_CONTROL_BOT_TOKEN` (no token = silently disabled).
   **How to apply:** never make the owner-gate conditional on truthiness of a parsed id — `Number("")`/NaN must block.
 - **`bot.start()` is a long-poll daemon — never `await` it.** It's launched fire-and-forget from `index.ts` after the engine boots, errors caught via `.catch` + `bot.catch`.
+- **The SPA fallback in `app.ts` must exclude `/api/*`.** In production the path-less `index.html` fallback would otherwise serve the dashboard HTML for ANY unmatched API route, so an API client (the control bot) gets a `<!doctype html>` page instead of JSON and echoes it into chat. Unmatched `/api/*` must return a JSON 404. Dev doesn't reproduce this (fallback is prod-gated). The `api()` helper also rejects HTML responses defensively.
+  **Why:** the Telegram bot once printed the whole dashboard HTML when it hit an unmatched/erroring endpoint.
 
 ## Multi-user model (single shared backend)
 The bot is multi-user but everyone runs against **one backend = this server** (`BASE = http://127.0.0.1:PORT/api`). Roles by chat id (admin = `TELEGRAM_CONTROL_CHAT_ID`, user = redeemed an access code, guest = none). Access is gated by one-time codes the admin generates; `botUsers.ts` persists users+tokens via the configStore DB write-through.
