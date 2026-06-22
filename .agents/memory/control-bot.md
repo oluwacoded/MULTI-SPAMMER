@@ -16,12 +16,19 @@ A second Telegram presence (Bot API via `grammy`) lets the owner run the dashboa
   **How to apply:** never make the owner-gate conditional on truthiness of a parsed id — `Number("")`/NaN must block.
 - **`bot.start()` is a long-poll daemon — never `await` it.** It's launched fire-and-forget from `index.ts` after the engine boots, errors caught via `.catch` + `bot.catch`.
 
-## Multi-tenant model
-The bot is multi-user: roles by chat id (admin = `TELEGRAM_CONTROL_CHAT_ID`, user = redeemed an access code, guest = none). The bot is a thin HTTP CLIENT — every action proxies to a **per-user backend base URL** (`botUsers.ts`, persisted via the configStore DB write-through like the engine). Admin defaults to the built-in loopback backend (`http://127.0.0.1:PORT/api`); each non-admin sets their own (e.g. Railway) after redeeming.
-- **SSRF guard is mandatory and non-obvious.** Because the server fetches the user-supplied backend URL, a non-admin could otherwise point it at `127.0.0.1`/private/metadata IPs and drive the admin's own backend or probe internal services. `isAllowedBackend()` forces non-admins to a **public https domain** (blocks loopback/RFC1918/link-local/CGNAT/bare-IP literals); admin is exempt. Enforce at BOTH set-time AND every request (middleware recomputes `ctx.base` and drops disallowed hosts so hand-edited config can't bypass it).
-  **Why:** architect review flagged this as the one severe hole in the multi-user rebuild.
+## Multi-user model (single shared backend)
+The bot is multi-user but everyone runs against **one backend = this server** (`BASE = http://127.0.0.1:PORT/api`). Roles by chat id (admin = `TELEGRAM_CONTROL_CHAT_ID`, user = redeemed an access code, guest = none). Access is gated by one-time codes the admin generates; `botUsers.ts` persists users+tokens via the configStore DB write-through.
+- **Per-user backend URLs were tried and REMOVED** — users pasting their own (Railway) backend caused issues. Don't reintroduce a per-user `base`; keep the fixed loopback `BASE`. (This also removed the SSRF surface, so the `isAllowedBackend`/private-host guards are gone with it.)
 - Guest gating is a second `bot.use` middleware after role resolution; only `/start`,`/menu`,`/redeem`,help, and the redeem flow pass for guests. Redeem has a per-chat brute-force throttle (6 tries / 10 min).
 - Long-running "boards" (scrape+add, WhatsApp campaign) edit ONE message on a ~2.6–3s poll loop, run detached (not awaited), are 30-min bounded, and guarded by an `activeBoards` Set per chat. End with a downloadable results `.txt`.
+
+## Run the control bot in ONE place only (dev/prod conflict)
+Telegram allows a single long-poll consumer per bot token. The dev workspace workflow AND the deployed VM both boot api-server with the SAME `TELEGRAM_CONTROL_BOT_TOKEN`, so when the workspace was open both fought (409 Conflict) and crash-looped.
+- **Fix:** `index.ts` only calls `startControlBot()` when `NODE_ENV === "production"` (deployment sets this) or `CONTROL_BOT_FORCE=1`. Dev logs "Control bot not started in development" and the GramJS engine still connects.
+- The bot self-heals: after any polling stop it relaunches on a fixed delay (clearing the webhook first), so transient network drops recover on their own.
+- Process error policy: `unhandledRejection` is logged and ignored (stray socket rejections are normal); `uncaughtException` logs then **exits** so the VM supervisor restarts a clean instance — never "log and keep running", which can limp along corrupted.
+  **Why:** a dropped GramJS/Baileys socket shouldn't take the server down, but a truly uncaught error means unknown state — a fresh restart (which reconnects everything) is safer than continuing.
+- **Changes only take effect after re-publishing the deployment.**
 
 ## WhatsApp pairing code
 `whatsappEngine.requestPairingCode(phone)` brings the Baileys socket up (if needed), waits ~2s, then calls `sock.requestPairingCode(digits)`. Only works while unregistered/not-connected.

@@ -1,14 +1,11 @@
-// ─── Telegram Control Bot (multi-user) ───────────────────────────────────────
+// ─── Telegram Control Bot (multi-user, single shared backend) ────────────────
 // A Telegram bot (Bot API, via grammy) that lets people drive the outreach tools
-// from inside Telegram. It is a thin CLIENT: every action is proxied over HTTP to
-// a *per-user backend*. The admin uses the built-in backend (this same server);
-// each other user points the bot at their OWN deployment (e.g. a Railway link)
-// after redeeming an access code, so their WhatsApp / Telegram / scraping all run
-// on their own server — never mixed with the admin's.
+// from inside Telegram. Everyone with access runs against THIS server's backend
+// (the same website/API). Access is gated by one-time codes the admin generates.
 //
 // Roles are decided by chat id:
 //   • Admin  = TELEGRAM_CONTROL_CHAT_ID — sees admin tools (generate codes, users).
-//   • User   = redeemed an access code — sees normal tools, runs on their backend.
+//   • User   = redeemed an access code — sees the normal tools.
 //   • Guest  = no access — can only redeem a code.
 //
 // Config (env / secrets):
@@ -16,22 +13,14 @@
 //   TELEGRAM_CONTROL_CHAT_ID    — admin chat id (required; bot refuses to run unset)
 import { Bot, Keyboard, InlineKeyboard, InputFile } from "grammy";
 import { logger } from "./logger";
-import {
-  getUser,
-  redeemToken,
-  generateToken,
-  setBackend,
-  listUsers,
-  listTokens,
-} from "./botUsers";
+import { getUser, redeemToken, generateToken, listUsers, listTokens } from "./botUsers";
 
-// The admin's built-in backend = this very server.
-const ADMIN_DEFAULT = `http://127.0.0.1:${process.env.PORT || 8080}/api`;
+// The one backend everyone uses: this very server.
+const BASE = `http://127.0.0.1:${process.env.PORT || 8080}/api`;
 
 // ─── Conversation state ──────────────────────────────────────────────────────
 type FlowName =
   | "redeem_token"
-  | "set_backend"
   | "wa_pair_phone"
   | "wa_campaign_msg"
   | "wa_campaign_nums"
@@ -61,7 +50,6 @@ const B = {
   telegram: "✈️ Telegram",
   whatsapp: "📱 WhatsApp",
   gmail: "📧 Gmail",
-  backend: "🌐 My Backend",
   help: "❓ Help",
   admin: "🛠 Admin",
   redeem: "🔑 Enter access code",
@@ -76,10 +64,9 @@ function mainKeyboard(isAdmin: boolean) {
     .text(B.whatsapp)
     .row()
     .text(B.gmail)
-    .text(B.backend)
+    .text(B.help)
     .row();
-  if (isAdmin) k.text(B.admin).text(B.help);
-  else k.text(B.help);
+  if (isAdmin) k.text(B.admin);
   return k.resized().persistent();
 }
 function guestKeyboard() {
@@ -124,8 +111,6 @@ function adminMenu() {
 }
 function helpMenu() {
   return new InlineKeyboard()
-    .text("🌐 Backend setup", "h_backend")
-    .row()
     .text("✈️ Telegram scrape + add", "h_tg")
     .row()
     .text("📱 WhatsApp", "h_wa")
@@ -163,60 +148,14 @@ function dataUrlToInputFile(dataUrl: string, name: string): InputFile {
   const b64 = dataUrl.replace(/^data:image\/\w+;base64,/, "");
   return new InputFile(Buffer.from(b64, "base64"), name);
 }
-function normalizeBase(input: string): string {
-  let b = (input || "").trim();
-  if (!b) return "";
-  b = b.replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(b)) b = "https://" + b;
-  if (!/\/api$/i.test(b)) b += "/api";
-  return b;
-}
-
-// Block loopback / private / link-local / metadata addresses.
-function isPrivateHost(host: string): boolean {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
-  if (h === "localhost" || h.endsWith(".localhost")) return true;
-  if (h === "::1" || h === "::") return true;
-  if (h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) return true; // IPv6 ULA / link-local
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const a = +m[1],
-      b = +m[2];
-    if (a === 127 || a === 0 || a === 10) return true;
-    if (a === 169 && b === 254) return true; // link-local + cloud metadata 169.254.169.254
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
-  }
-  return false;
-}
-
-// Non-admins may only point at a PUBLIC https host (not the admin's own/local
-// backend, not internal services, not a bare IP). Prevents SSRF + cross-tenant
-// control. The admin is exempt (uses the built-in loopback backend).
-function isAllowedBackend(url: string, isAdmin: boolean): boolean {
-  if (isAdmin) return true;
-  let u: URL;
-  try {
-    u = new URL(url);
-  } catch {
-    return false;
-  }
-  if (u.protocol !== "https:") return false;
-  const host = u.hostname;
-  if (isPrivateHost(host)) return false;
-  // Force a public domain — block bare IPv4/IPv6 literals.
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":")) return false;
-  return true;
-}
 function bar(pct: number): string {
   const n = Math.max(0, Math.min(10, Math.round(pct / 10)));
   return "▰".repeat(n) + "▱".repeat(10 - n);
 }
 
-// HTTP call to a user's backend; never throws — returns a JSON-ish object.
-async function api(base: string, method: string, p: string, body?: any): Promise<any> {
-  const url = base.replace(/\/+$/, "") + p;
+// HTTP call to the backend; never throws — returns a JSON-ish object.
+async function api(method: string, p: string, body?: any): Promise<any> {
+  const url = BASE.replace(/\/+$/, "") + p;
   let res: Response;
   try {
     res = await fetch(url, {
@@ -226,7 +165,7 @@ async function api(base: string, method: string, p: string, body?: any): Promise
       signal: AbortSignal.timeout(35000),
     });
   } catch (e: any) {
-    return { ok: false, message: "Can't reach your backend (" + (e?.message || e) + ")" };
+    return { ok: false, message: "Backend error (" + (e?.message || e) + ")" };
   }
   const txt = await res.text();
   let json: any;
@@ -239,9 +178,9 @@ async function api(base: string, method: string, p: string, body?: any): Promise
   return json;
 }
 
-// ─── Status text (fetched from the user's backend) ───────────────────────────
-async function tgStatusText(base: string): Promise<string> {
-  const s = await api(base, "GET", "/bot/status");
+// ─── Status text ─────────────────────────────────────────────────────────────
+async function tgStatusText(): Promise<string> {
+  const s = await api("GET", "/bot/status");
   if (s.ok === false) return "✈️ Telegram: " + esc(s.message || "unreachable");
   const accounts: any[] = s.accounts || [];
   if (!accounts.length)
@@ -257,8 +196,8 @@ async function tgStatusText(base: string): Promise<string> {
       .join("\n")
   );
 }
-async function waStatusText(base: string): Promise<string> {
-  const s = await api(base, "GET", "/whatsapp/status");
+async function waStatusText(): Promise<string> {
+  const s = await api("GET", "/whatsapp/status");
   if (s.ok === false) return "📱 WhatsApp: " + esc(s.message || "unreachable");
   const state = s.connected
     ? `🟢 Connected${s.me?.name ? " as " + esc(s.me.name) : ""}`
@@ -270,8 +209,8 @@ async function waStatusText(base: string): Promise<string> {
     : "";
   return `📱 <b>WhatsApp</b>\n${state}${camp}`;
 }
-async function gmStatusText(base: string): Promise<string> {
-  const s = await api(base, "GET", "/gmail/campaign/status");
+async function gmStatusText(): Promise<string> {
+  const s = await api("GET", "/gmail/campaign/status");
   if (s.ok === false) return "📧 Gmail: " + esc(s.message || "unreachable");
   const cfg = s.configured ? "🟢 Configured" : "⚪️ Not configured (set it on the website)";
   const camp = s.active
@@ -353,7 +292,7 @@ async function sendResultsFile(ctx: any, s: any): Promise<void> {
   }
 }
 
-async function runAddBoard(ctx: any, base: string): Promise<void> {
+async function runAddBoard(ctx: any): Promise<void> {
   const chatId = ctx.chat.id;
   if (activeBoards.has(chatId)) {
     await ctx.reply("A live board is already running here. Tap ⏹ Stop first.");
@@ -368,7 +307,7 @@ async function runAddBoard(ctx: any, base: string): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < 30 * 60 * 1000) {
       await sleep(2600);
-      s = await api(base, "GET", "/scrape/add-status");
+      s = await api("GET", "/scrape/add-status");
       const txt = addBoardText(s);
       if (txt !== last) {
         last = txt;
@@ -408,7 +347,7 @@ function waBoardText(s: any, done = false): string {
   return lines.join("\n");
 }
 
-async function runWaBoard(ctx: any, base: string): Promise<void> {
+async function runWaBoard(ctx: any): Promise<void> {
   const chatId = ctx.chat.id;
   if (activeBoards.has(chatId)) {
     await ctx.reply("A live board is already running here.");
@@ -422,7 +361,7 @@ async function runWaBoard(ctx: any, base: string): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < 30 * 60 * 1000) {
       await sleep(3000);
-      s = await api(base, "GET", "/whatsapp/campaign/status");
+      s = await api("GET", "/whatsapp/campaign/status");
       const txt = waBoardText(s);
       if (txt !== last) {
         last = txt;
@@ -441,10 +380,10 @@ async function runWaBoard(ctx: any, base: string): Promise<void> {
 }
 
 // Poll a freshly-started Telegram login until it resolves.
-async function pollLogin(base: string, accountId: string, tries = 12): Promise<string> {
+async function pollLogin(accountId: string, tries = 12): Promise<string> {
   for (let i = 0; i < tries; i++) {
     await sleep(2000);
-    const s = await api(base, "GET", "/bot/status");
+    const s = await api("GET", "/bot/status");
     const acc = (s.accounts || []).find((a: any) => a.id === accountId);
     const ls = acc?.loginState;
     if (ls === "connected" || ls === "awaiting_password" || ls === "error") return ls;
@@ -454,14 +393,6 @@ async function pollLogin(base: string, accountId: string, tries = 12): Promise<s
 
 // ─── Help texts (deliberately simple, step-by-step) ──────────────────────────
 const HELP: Record<string, string> = {
-  h_backend:
-    "🌐 <b>Backend setup</b>\n\n" +
-    "Your backend is the server that actually runs your jobs.\n\n" +
-    "1) Deploy your own copy of the app (e.g. on Railway).\n" +
-    "2) Copy its web link (looks like https://your-app.up.railway.app).\n" +
-    "3) Here in the bot, tap 🌐 My Backend → ✏️ Change backend.\n" +
-    "4) Paste the link and send it.\n\n" +
-    "✅ When it says “reachable”, you're ready. The admin uses the built-in backend automatically.",
   h_tg:
     "✈️ <b>Telegram: Scrape + Add</b>\n\n" +
     "This copies members from one group and adds them to your group.\n\n" +
@@ -521,14 +452,7 @@ export function startControlBot(): void {
   const showMain = (ctx: any, text: string) =>
     ctx.reply(text, { parse_mode: "HTML", reply_markup: mainKeyboard(!!ctx.isAdmin) });
 
-  const promptBackend = async (ctx: any) => {
-    await ctx.reply(
-      "🌐 First, set your backend server.\nPaste your own backend link (e.g. your Railway URL).",
-      { reply_markup: new InlineKeyboard().text("✏️ Set backend", "set_backend") },
-    );
-  };
-
-  // ── Middleware 1: resolve role + backend for this chat ──
+  // ── Middleware 1: resolve role for this chat ──
   bot.use(async (ctx, next) => {
     const chatId = ctx.chat?.id;
     if (chatId == null) return;
@@ -536,9 +460,6 @@ export function startControlBot(): void {
     const u = getUser(chatId);
     (ctx as any).isAdmin = isAdmin;
     (ctx as any).access = isAdmin || !!u;
-    const rawBase = isAdmin ? u?.backendBase || ADMIN_DEFAULT : u?.backendBase || "";
-    // Runtime guard: never proxy to a disallowed host even if config was hand-edited.
-    (ctx as any).base = rawBase && isAllowedBackend(rawBase, isAdmin) ? rawBase : "";
     await next();
   });
 
@@ -593,9 +514,9 @@ export function startControlBot(): void {
     (ctx as any).access = true;
     (ctx as any).isAdmin = ctx.chat.id === ownerId;
     await ctx.reply(
-      "✅ Access granted!\n\nNext step: tap “" +
-        B.backend +
-        "” and paste your backend link so the bot knows where to run your jobs.",
+      "✅ Access granted! You're all set.\n\nTap " +
+        B.help +
+        " for simple step-by-step instructions, or just pick a tool below.",
       { parse_mode: "HTML", reply_markup: mainKeyboard(!!(ctx as any).isAdmin) },
     );
   };
@@ -659,47 +580,21 @@ export function startControlBot(): void {
   });
 
   bot.hears(B.status, async (ctx) => {
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    await ctx.reply("⏳ Checking your backend…");
-    const txt = [await tgStatusText(base), await waStatusText(base), await gmStatusText(base)].join(
-      "\n\n",
-    );
+    await ctx.reply("⏳ Checking…");
+    const txt = [await tgStatusText(), await waStatusText(), await gmStatusText()].join("\n\n");
     await ctx.reply(txt, { parse_mode: "HTML" });
   });
 
   bot.hears(B.telegram, async (ctx) => {
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    await ctx.reply(await tgStatusText(base), { parse_mode: "HTML", reply_markup: tgMenu() });
+    await ctx.reply(await tgStatusText(), { parse_mode: "HTML", reply_markup: tgMenu() });
   });
 
   bot.hears(B.whatsapp, async (ctx) => {
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    await ctx.reply(await waStatusText(base), { parse_mode: "HTML", reply_markup: waMenu() });
+    await ctx.reply(await waStatusText(), { parse_mode: "HTML", reply_markup: waMenu() });
   });
 
   bot.hears(B.gmail, async (ctx) => {
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    await ctx.reply(await gmStatusText(base), { parse_mode: "HTML", reply_markup: gmailMenu() });
-  });
-
-  bot.hears(B.backend, async (ctx) => {
-    const u = getUser(ctx.chat.id);
-    const cur = (ctx as any).isAdmin
-      ? u?.backendBase || ADMIN_DEFAULT + " (built-in)"
-      : u?.backendBase || "— not set —";
-    await ctx.reply(
-      "🌐 <b>Your backend</b>\nCurrent: <code>" +
-        esc(cur) +
-        "</code>\n\nThis is the server that runs your WhatsApp + scraping jobs. " +
-        ((ctx as any).isAdmin
-          ? "You use the built-in one by default."
-          : "Paste your own backend link (e.g. a Railway URL)."),
-      { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("✏️ Change backend", "set_backend") },
-    );
+    await ctx.reply(await gmStatusText(), { parse_mode: "HTML", reply_markup: gmailMenu() });
   });
 
   bot.hears(B.admin, async (ctx) => {
@@ -714,15 +609,6 @@ export function startControlBot(): void {
       await ctx.reply(HELP[key], { parse_mode: "HTML" });
     });
   }
-
-  // ── Backend set callback ──
-  bot.callbackQuery("set_backend", async (ctx) => {
-    await ctx.answerCallbackQuery();
-    flows.set(ctx.chat!.id, { flow: "set_backend", data: {} });
-    await ctx.reply("Paste your backend link (e.g. https://your-app.up.railway.app):", {
-      reply_markup: cancelKeyboard(),
-    });
-  });
 
   // ── Admin callbacks ──
   bot.callbackQuery("admin_token", async (ctx) => {
@@ -747,8 +633,7 @@ export function startControlBot(): void {
     }
     const lines = users.map((u) => {
       const who = u.username ? "@" + u.username : u.name || String(u.chatId);
-      const be = u.backendBase ? "🌐 set" : "⚪️ no backend";
-      return `• ${esc(who)} (${u.chatId}) — ${be}`;
+      return `• ${esc(who)} (${u.chatId})`;
     });
     await ctx.reply("👥 <b>Users</b>\n" + lines.join("\n"), { parse_mode: "HTML" });
   });
@@ -769,26 +654,22 @@ export function startControlBot(): void {
   // ── WhatsApp callbacks ──
   bot.callbackQuery("wa_status", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    await ctx.reply(await waStatusText(base), { parse_mode: "HTML", reply_markup: waMenu() });
+    await ctx.reply(await waStatusText(), { parse_mode: "HTML", reply_markup: waMenu() });
   });
 
   bot.callbackQuery("wa_qr", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    const st = await api(base, "GET", "/whatsapp/status");
+    const st = await api("GET", "/whatsapp/status");
     if (st.connected) {
       await ctx.reply("🟢 WhatsApp is already connected.");
       return;
     }
     await ctx.reply("⏳ Generating QR… open WhatsApp → Linked devices → Link a device.");
-    await api(base, "POST", "/whatsapp/connect");
+    await api("POST", "/whatsapp/connect");
     let sent = false;
     for (let i = 0; i < 12; i++) {
       await sleep(2200);
-      const s = await api(base, "GET", "/whatsapp/status");
+      const s = await api("GET", "/whatsapp/status");
       if (s.connected) {
         await ctx.reply("🟢 Connected!");
         sent = true;
@@ -811,9 +692,7 @@ export function startControlBot(): void {
 
   bot.callbackQuery("wa_pair", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    const st = await api(base, "GET", "/whatsapp/status");
+    const st = await api("GET", "/whatsapp/status");
     if (st.connected) {
       await ctx.reply("🟢 WhatsApp is already connected.");
       return;
@@ -826,9 +705,7 @@ export function startControlBot(): void {
 
   bot.callbackQuery("wa_campaign", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    const st = await api(base, "GET", "/whatsapp/status");
+    const st = await api("GET", "/whatsapp/status");
     if (!st.connected) {
       await ctx.reply("Connect WhatsApp first (QR or pairing code).");
       return;
@@ -841,25 +718,19 @@ export function startControlBot(): void {
 
   bot.callbackQuery("wa_logout", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    await api(base, "POST", "/whatsapp/logout");
+    await api("POST", "/whatsapp/logout");
     await ctx.reply("🚪 WhatsApp logged out.");
   });
 
   // ── Telegram callbacks ──
   bot.callbackQuery("tg_accounts", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    await ctx.reply(await tgStatusText(base), { parse_mode: "HTML", reply_markup: tgMenu() });
+    await ctx.reply(await tgStatusText(), { parse_mode: "HTML", reply_markup: tgMenu() });
   });
 
   bot.callbackQuery("tg_addstatus", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    const s = await api(base, "GET", "/scrape/add-status");
+    const s = await api("GET", "/scrape/add-status");
     if (!s || s.active === false || s.active === undefined) {
       await ctx.reply("No add job running right now.");
       return;
@@ -869,16 +740,12 @@ export function startControlBot(): void {
 
   bot.callbackQuery("tg_stopadd", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    await api(base, "POST", "/scrape/add-stop", {});
+    await api("POST", "/scrape/add-stop", {});
     await ctx.reply("⏹ Add job stopped.");
   });
 
   bot.callbackQuery("tg_scrape", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
     flows.set(ctx.chat!.id, { flow: "tg_scrape_source", data: {} });
     await ctx.reply(
       "Send the SOURCE group to scrape members FROM (e.g. @group or https://t.me/group):",
@@ -888,8 +755,6 @@ export function startControlBot(): void {
 
   bot.callbackQuery("tg_link", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
     flows.set(ctx.chat!.id, { flow: "tg_login_phone", data: {} });
     await ctx.reply(
       "Let's link YOUR Telegram account.\nSend your phone number with country code (e.g. +15551234567):",
@@ -900,16 +765,12 @@ export function startControlBot(): void {
   // ── Gmail callbacks ──
   bot.callbackQuery("gmail_status", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    await ctx.reply(await gmStatusText(base), { parse_mode: "HTML", reply_markup: gmailMenu() });
+    await ctx.reply(await gmStatusText(), { parse_mode: "HTML", reply_markup: gmailMenu() });
   });
 
   bot.callbackQuery("gmail_send", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const base = (ctx as any).base;
-    if (!base) return promptBackend(ctx);
-    const s = await api(base, "GET", "/gmail/campaign/status");
+    const s = await api("GET", "/gmail/campaign/status");
     if (!s.configured) {
       await ctx.reply("Gmail isn't configured yet — set the email + app password on the website.");
       return;
@@ -924,7 +785,6 @@ export function startControlBot(): void {
     const text = ctx.message.text.trim();
     const state = flows.get(chatId);
     if (!state) return;
-    const base = (ctx as any).base as string;
 
     try {
       switch (state.flow) {
@@ -934,46 +794,10 @@ export function startControlBot(): void {
           break;
         }
 
-        case "set_backend": {
-          flows.delete(chatId);
-          const nb = normalizeBase(text);
-          if (!nb) {
-            await showMain(ctx, "That didn't look like a link. Try again from " + B.backend + ".");
-            break;
-          }
-          if (!isAllowedBackend(nb, !!(ctx as any).isAdmin)) {
-            await showMain(
-              ctx,
-              "❌ For security, your backend must be a <b>public https link</b> — not localhost, an internal/private address, or a bare IP.\nExample: <code>https://your-app.up.railway.app</code>",
-            );
-            break;
-          }
-          await ctx.reply("⏳ Checking the link…");
-          const test = await api(nb, "GET", "/bot/status");
-          setBackend(chatId, nb, {
-            username: ctx.from?.username,
-            name: [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(" "),
-          });
-          (ctx as any).base = nb;
-          if (test.ok === false)
-            await showMain(
-              ctx,
-              "Saved your backend, but I couldn't reach it yet:\n<code>" +
-                esc(test.message || "") +
-                "</code>\nMake sure it's deployed and the link is correct.",
-            );
-          else await showMain(ctx, "✅ Backend set and reachable:\n<code>" + esc(nb) + "</code>");
-          break;
-        }
-
         case "wa_pair_phone": {
           flows.delete(chatId);
-          if (!base) {
-            await promptBackend(ctx);
-            break;
-          }
           await ctx.reply("⏳ Requesting pairing code…");
-          const r = await api(base, "POST", "/whatsapp/pair", { phone: text });
+          const r = await api("POST", "/whatsapp/pair", { phone: text });
           if (r.ok && r.code)
             await ctx.reply(
               "🔢 Pairing code: <b>" +
@@ -997,16 +821,12 @@ export function startControlBot(): void {
 
         case "wa_campaign_nums": {
           flows.delete(chatId);
-          if (!base) {
-            await promptBackend(ctx);
-            break;
-          }
           const contacts = parseNumbers(text);
           if (!contacts.length) {
             await showMain(ctx, "No valid numbers found. Cancelled.");
             break;
           }
-          const r = await api(base, "POST", "/whatsapp/campaign/start", {
+          const r = await api("POST", "/whatsapp/campaign/start", {
             contacts,
             message: state.data.message,
           });
@@ -1015,7 +835,7 @@ export function startControlBot(): void {
             break;
           }
           await ctx.reply(`📣 Starting for ${contacts.length} numbers…`);
-          runWaBoard(ctx, base).catch((e) => logger.error({ err: e }, "wa board"));
+          runWaBoard(ctx).catch((e) => logger.error({ err: e }, "wa board"));
           break;
         }
 
@@ -1031,10 +851,6 @@ export function startControlBot(): void {
 
         case "tg_scrape_target": {
           flows.delete(chatId);
-          if (!base) {
-            await promptBackend(ctx);
-            break;
-          }
           const source = state.data.source as string;
           const targets = text
             .split(/[\n,]+/)
@@ -1044,7 +860,7 @@ export function startControlBot(): void {
             await showMain(ctx, "No target group given. Cancelled.");
             break;
           }
-          const r = await api(base, "POST", "/scrape/add-members", {
+          const r = await api("POST", "/scrape/add-members", {
             sourceGroups: [source],
             targetGroups: targets,
             limit: 5000,
@@ -1054,18 +870,13 @@ export function startControlBot(): void {
             await showMain(ctx, "❌ " + esc(r.message || "Couldn't start the job."));
             break;
           }
-          runAddBoard(ctx, base).catch((e) => logger.error({ err: e }, "add board"));
+          runAddBoard(ctx).catch((e) => logger.error({ err: e }, "add board"));
           break;
         }
 
         case "tg_login_phone": {
-          if (!base) {
-            flows.delete(chatId);
-            await promptBackend(ctx);
-            break;
-          }
           await ctx.reply("⏳ Sending login code to Telegram…");
-          const r = await api(base, "POST", "/login/start", {
+          const r = await api("POST", "/login/start", {
             phone: text,
             createNew: true,
             label: "Bot-linked",
@@ -1074,7 +885,7 @@ export function startControlBot(): void {
             flows.delete(chatId);
             await showMain(
               ctx,
-              "❌ " + esc(r.message || "Couldn't start login. Check the API keys on your backend."),
+              "❌ " + esc(r.message || "Couldn't start login. Check the API keys on the website."),
             );
             break;
           }
@@ -1088,14 +899,9 @@ export function startControlBot(): void {
         }
 
         case "tg_login_code": {
-          if (!base) {
-            flows.delete(chatId);
-            await promptBackend(ctx);
-            break;
-          }
-          await api(base, "POST", "/login/code", { code: text, accountId: state.data.accountId });
+          await api("POST", "/login/code", { code: text, accountId: state.data.accountId });
           await ctx.reply("⏳ Verifying…");
-          const ls = await pollLogin(base, state.data.accountId);
+          const ls = await pollLogin(state.data.accountId);
           if (ls === "connected") {
             flows.delete(chatId);
             await showMain(ctx, "✅ Your Telegram account is linked!");
@@ -1112,17 +918,12 @@ export function startControlBot(): void {
         }
 
         case "tg_login_2fa": {
-          if (!base) {
-            flows.delete(chatId);
-            await promptBackend(ctx);
-            break;
-          }
-          await api(base, "POST", "/login/2fa", {
+          await api("POST", "/login/2fa", {
             password: text,
             accountId: state.data.accountId,
           });
           await ctx.reply("⏳ Verifying password…");
-          const ls = await pollLogin(base, state.data.accountId);
+          const ls = await pollLogin(state.data.accountId);
           flows.delete(chatId);
           if (ls === "connected") await showMain(ctx, "✅ Your Telegram account is linked!");
           else await showMain(ctx, "❌ Wrong password or timed out. Try again from ✈️ Telegram.");
@@ -1149,16 +950,12 @@ export function startControlBot(): void {
 
         case "gmail_recipients": {
           flows.delete(chatId);
-          if (!base) {
-            await promptBackend(ctx);
-            break;
-          }
           const recipients = parseEmails(text);
           if (!recipients.length) {
             await showMain(ctx, "No valid emails found. Cancelled.");
             break;
           }
-          const r = await api(base, "POST", "/gmail/campaign/start", {
+          const r = await api("POST", "/gmail/campaign/start", {
             contacts: recipients,
             subject: state.data.subject,
             html: state.data.body,
@@ -1193,9 +990,22 @@ export function startControlBot(): void {
     ])
     .catch(() => {});
 
-  bot
-    .start({
+  // Resilient launch: clear any stale webhook/getUpdates conflict, then run.
+  // If long-polling ever dies, wait and relaunch so the bot self-heals.
+  const launch = async (): Promise<void> => {
+    try {
+      await bot.api.deleteWebhook({ drop_pending_updates: false });
+    } catch {}
+    await bot.start({
+      drop_pending_updates: false,
       onStart: (info) => logger.info({ username: info.username }, "Control bot started"),
-    })
-    .catch((err) => logger.error({ err }, "Control bot failed to start"));
+    });
+  };
+  const runForever = () => {
+    launch().catch((err) => {
+      logger.error({ err }, "Control bot polling stopped; relaunching in 15s");
+      setTimeout(runForever, 15000);
+    });
+  };
+  runForever();
 }

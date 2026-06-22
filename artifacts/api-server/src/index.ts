@@ -56,14 +56,39 @@ async function main() {
     } catch (err) {
       logger.error({ err }, "Bot engine failed to initialise");
     }
-    // Start the Telegram control bot (no-op if its token isn't configured).
-    try {
-      startControlBot();
-    } catch (err) {
-      logger.error({ err }, "Control bot failed to start");
+    // Start the Telegram control bot ONLY in production. Telegram allows just one
+    // long-poll consumer per bot token; if the dev workspace also started it, the
+    // dev + deployed instances fight (409 Conflict) and crash-loop. Running it only
+    // on the deployed VM keeps it online 24/7 and conflict-free.
+    // Override for local testing with CONTROL_BOT_FORCE=1.
+    const runControlBot =
+      process.env["NODE_ENV"] === "production" || process.env["CONTROL_BOT_FORCE"] === "1";
+    if (runControlBot) {
+      try {
+        startControlBot();
+      } catch (err) {
+        logger.error({ err }, "Control bot failed to start");
+      }
+    } else {
+      logger.info(
+        "Control bot not started in development (runs only on the deployed app to avoid a Telegram polling conflict)",
+      );
     }
   });
 }
+
+// Stray promise rejections (e.g. a dropped GramJS/Baileys socket) are common and
+// non-fatal — log and keep serving.
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason }, "Unhandled promise rejection (continuing)");
+});
+// An uncaught exception may have left the process in a bad state. Log and exit so
+// the deployment's supervisor restarts a clean instance (which reconnects all
+// accounts + the control bot) rather than limping along corrupted.
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "Uncaught exception — exiting for a clean restart");
+  process.exit(1);
+});
 
 main().catch((err) => {
   logger.error({ err }, "Fatal error during startup");
