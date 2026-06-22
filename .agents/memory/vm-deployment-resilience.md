@@ -30,3 +30,23 @@ unhealthy → restart → outage.
 **Decision:** give the api router a root `GET "/"` returning `{status:"ok"}`.
 **Why:** a VM is only "healthy" if its probed endpoint reliably returns 200; a
 flaky/expensive health path causes self-inflicted restarts.
+
+## Open the HTTP port BEFORE slow boot work (DB restore / engine init)
+A reported outage was actually a ~14s cold-start gap on every restart: `index.ts`
+ran `await restoreConfigToDisk()` (a Postgres round-trip) BEFORE `app.listen()`, so
+during boot the platform's `/api` probe got 500 (nothing listening) until the restore
+finished — and a slow/cold DB widened the window.
+**Decision:** `app.listen()` first; run `restoreConfigToDisk()` + `getBotInstance()` +
+control-bot start in a background `bootstrap()` from the listen callback.
+**Why:** health must pass within ~1s of process start; slow startup work must never gate
+the port. Tradeoff: routes reading config files directly during the brief restore window
+see defaults — acceptable vs. a guaranteed multi-second outage on every restart.
+**How to apply:** any future boot-time async (migrations, warmup, reconnects) goes in
+`bootstrap()` AFTER listen, never before it.
+
+## Exactly ONE process handler per event
+There were TWO `uncaughtException` handlers — one "log & keep alive", one `process.exit(1)`.
+Node runs ALL listeners, so the exit one silently won and defeated the keep-alive policy,
+turning every stray background error back into a restart (→ cold-start outage).
+**How to apply:** register a single handler per `uncaughtException`/`unhandledRejection`;
+if you want keep-alive, make sure nothing else exits on the same event.
