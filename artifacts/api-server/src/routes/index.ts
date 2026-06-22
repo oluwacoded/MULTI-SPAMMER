@@ -8,6 +8,7 @@ import whatsappRouter from "./whatsapp.js";
 import gatewayRouter from "./gateway.js";
 import smmRouter from "./smm.js";
 import smmPanelRouter from "./smmPanel.js";
+import toolsRouter from "./tools.js";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use(whatsappRouter);
 router.use(gatewayRouter);
 router.use(smmRouter);
 router.use(smmPanelRouter);
+router.use(toolsRouter);
 
 export default router;

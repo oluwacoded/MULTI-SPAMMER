@@ -15,6 +15,8 @@ import SmsFlash from "@/pages/SmsFlash";
 import Settings from "@/pages/Settings";
 import ContactLists from "@/pages/ContactLists";
 import CampaignHistory from "@/pages/CampaignHistory";
+import EmailVerifier from "@/pages/EmailVerifier";
+import EmailScraper from "@/pages/EmailScraper";
 import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient({
@@ -35,6 +37,8 @@ function Router() {
       <Route path="/settings" component={Settings} />
       <Route path="/contact-lists" component={ContactLists} />
       <Route path="/campaign-history" component={CampaignHistory} />
+      <Route path="/email-verifier" component={EmailVerifier} />
+      <Route path="/email-scraper" component={EmailScraper} />
       <Route component={NotFound} />
     </Switch>
   );
