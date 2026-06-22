@@ -901,14 +901,18 @@ export function startControlBot(): void {
           state.data.accountId = r.accountId;
           state.flow = "tg_login_code";
           await ctx.reply(
-            "📲 Telegram sent a login code (inside the Telegram app). Send that code here:",
-            { reply_markup: cancelKeyboard() },
+            "📲 Telegram sent you a login code.\n\n" +
+              "⚠️ <b>Important:</b> Telegram blocks the login if you type the code as plain digits in a chat. " +
+              "So type it here <b>with a space or dash between each digit</b>.\n\n" +
+              "Example: if the code is <code>13605</code>, send <code>1 3 6 0 5</code> (or <code>1-3-6-0-5</code>).",
+            { parse_mode: "HTML", reply_markup: cancelKeyboard() },
           );
           break;
         }
 
         case "tg_login_code": {
-          await api("POST", "/login/code", { code: text, accountId: state.data.accountId });
+          const code = text.replace(/\D/g, "");
+          await api("POST", "/login/code", { code, accountId: state.data.accountId });
           await ctx.reply("⏳ Verifying…");
           const ls = await pollLogin(state.data.accountId);
           if (ls === "connected") {
