@@ -40,7 +40,7 @@ class WhatsAppEngine {
     try {
       const baileys: any = await import("@whiskeysockets/baileys");
       const makeWASocket = baileys.default || baileys.makeWASocket;
-      const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = baileys;
+      const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } = baileys;
 
       if (!fs.existsSync(WA_AUTH_DIR)) fs.mkdirSync(WA_AUTH_DIR, { recursive: true });
       const { state, saveCreds } = await useMultiFileAuthState(WA_AUTH_DIR);
@@ -87,6 +87,20 @@ class WhatsAppEngine {
           }
         }
       });
+
+      // Reply ".vv" to a view-once photo/video/voice note and we re-send the
+      // media as a normal (replayable) message into the SAME chat. Only the
+      // linked account owner (fromMe) can trigger it.
+      sock.ev.on("messages.upsert", async (ev: any) => {
+        if (ev?.type && ev.type !== "notify") return;
+        for (const msg of ev?.messages || []) {
+          try {
+            await this._maybeUnlockViewOnce(sock, downloadMediaMessage, msg);
+          } catch (e: any) {
+            console.log("[WhatsApp] .vv handler error:", e?.message || e);
+          }
+        }
+      });
     } catch (e: any) {
       this.connecting = false;
       this.lastError = e?.message || "Failed to start WhatsApp";
@@ -129,6 +143,83 @@ class WhatsAppEngine {
     this.qrDataUrl = null;
     this.me = null;
     try { fs.rmSync(WA_AUTH_DIR, { recursive: true, force: true }); } catch {}
+  }
+
+  // ─── ".vv" view-once unlocker ───────────────────────────────────────────────
+  // A no-op logger so Baileys' downloadMediaMessage never crashes if it logs.
+  private _silentLogger(): any {
+    const noop = () => {};
+    const l: any = { level: "silent", trace: noop, debug: noop, info: noop, warn: noop, error: noop, fatal: noop };
+    l.child = () => l;
+    return l;
+  }
+
+  private async _maybeUnlockViewOnce(sock: any, downloadMediaMessage: any, msg: any): Promise<void> {
+    // Only the linked account owner may trigger it.
+    if (!msg?.key?.fromMe) return;
+    const outer = msg.message;
+    if (!outer) return;
+    const content = outer.ephemeralMessage?.message || outer;
+    const ext = content.extendedTextMessage;
+    if (!ext) return;
+    const body = (ext.text || "").trim().toLowerCase();
+    if (body !== ".vv" && body !== ".v") return;
+
+    const ctxInfo = ext.contextInfo;
+    const quotedRaw = ctxInfo?.quotedMessage;
+    if (!quotedRaw) return;
+
+    // Unwrap disappearing-message + view-once wrappers around the quoted message.
+    let inner = quotedRaw.ephemeralMessage?.message || quotedRaw;
+    const vo =
+      inner.viewOnceMessageV2Extension || inner.viewOnceMessageV2 || inner.viewOnceMessage;
+    if (vo?.message) inner = vo.message;
+
+    const img = inner.imageMessage;
+    const vid = inner.videoMessage;
+    const aud = inner.audioMessage;
+    if (!img && !vid && !aud) return; // the reply wasn't to a media message
+
+    const remoteJid = msg.key.remoteJid;
+    if (!remoteJid) return;
+
+    const fakeMsg = {
+      key: {
+        remoteJid: ctxInfo.remoteJid || remoteJid,
+        id: ctxInfo.stanzaId,
+        fromMe: false,
+        participant: ctxInfo.participant,
+      },
+      message: inner,
+    };
+
+    try {
+      const buffer: Buffer = await downloadMediaMessage(
+        fakeMsg,
+        "buffer",
+        {},
+        { logger: this._silentLogger(), reuploadRequest: sock.updateMediaMessage },
+      );
+      if (!buffer || !buffer.length) throw new Error("empty media");
+      if (img) {
+        await sock.sendMessage(remoteJid, { image: buffer, caption: img.caption || undefined });
+      } else if (vid) {
+        await sock.sendMessage(remoteJid, { video: buffer, caption: vid.caption || undefined });
+      } else if (aud) {
+        await sock.sendMessage(remoteJid, {
+          audio: buffer,
+          mimetype: aud.mimetype || "audio/ogg; codecs=opus",
+          ptt: !!aud.ptt,
+        });
+      }
+    } catch (e: any) {
+      console.log("[WhatsApp] .vv unlock failed:", e?.message || e);
+      try {
+        await sock.sendMessage(remoteJid, {
+          text: "⚠️ Couldn't unlock that view-once (it may have expired or already been opened).",
+        });
+      } catch {}
+    }
   }
 
   getStatus() {
