@@ -2,6 +2,7 @@
 import fs from "fs";
 import path from "path";
 import qrcode from "qrcode";
+import pino from "pino";
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const WA_AUTH_DIR = path.join(DATA_DIR, "whatsapp-auth");
@@ -30,6 +31,15 @@ class WhatsAppEngine {
   private lastError = "";
   private socketReady = false;
   private generation = 0;
+  // Distinguish a real logout from the post-pairing restart. WhatsApp emits a
+  // single 401/loggedOut as part of the pair-success handshake before it sends
+  // 515 ("restart required"); wiping the session on that first event (when we
+  // have never reached "open") is exactly what aborts the link. We only treat a
+  // logout as real once we have actually connected, or once the creds prove dead
+  // (repeated 401s that never reach "open").
+  private hasEverConnected = false;
+  private consecutive401s = 0;
+  private reconnectCount = 0;
   private campaign: any = {
     active: false, contacts: [], index: 0, message: "",
     sent: 0, failed: 0, noWhatsapp: 0, startTime: null, timer: null, log: [], options: {},
@@ -62,7 +72,7 @@ class WhatsAppEngine {
     try {
       const baileys: any = await import("@whiskeysockets/baileys");
       const makeWASocket = baileys.default || baileys.makeWASocket;
-      const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = baileys;
+      const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore } = baileys;
 
       if (!fs.existsSync(WA_AUTH_DIR)) fs.mkdirSync(WA_AUTH_DIR, { recursive: true });
       const { state, saveCreds } = await useMultiFileAuthState(WA_AUTH_DIR);
@@ -73,13 +83,27 @@ class WhatsAppEngine {
       // Bail without touching shared state — the newer call owns it.
       if (myGen !== this.generation) return;
 
+      const signalLogger = pino({ level: "silent" });
       const sock = makeWASocket({
-        auth: state,
         version,
+        // Wrap the file-backed key store in Baileys' in-memory cacheable wrapper.
+        // Reading signal keys from disk on every decrypt races with creds.update
+        // writes and makes libsignal reject the MAC ("Bad MAC"), which drops the
+        // session mid-handshake. Caching the keys is the fix.
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, signalLogger),
+        },
         printQRInTerminal: false,
         markOnlineOnConnect: false,
         syncFullHistory: false,
-        browser: Browsers.ubuntu("Chrome"),
+        // Match the fingerprint the original (working) bot used.
+        browser: Browsers.windows("Chrome"),
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        retryRequestDelayMs: 250,
+        maxMsgRetryCount: 5,
+        emitOwnEvents: false,
       });
 
       // Re-check before publishing the socket; if superseded, discard it.
@@ -115,42 +139,62 @@ class WhatsAppEngine {
           this.connecting = false;
           this.qrDataUrl = null;
           this.me = sock.user;
+          this.hasEverConnected = true;
+          this.consecutive401s = 0;
+          this.reconnectCount = 0;
           console.log("[WhatsApp] ✅ Connected as", sock.user?.id);
         } else if (connection === "close") {
           this.connected = false;
           const code = lastDisconnect?.error?.output?.statusCode;
-          const loggedOut = code === DisconnectReason.loggedOut;
           this.lastError = lastDisconnect?.error?.message || "";
           this.sock = null;
-          if (loggedOut) {
-            console.log("[WhatsApp] Logged out — clearing session");
-            this._clearAuth();
-            this.connecting = false;
-            this.qrDataUrl = null;
-          } else if (code === DisconnectReason.connectionReplaced) {
+          this.connecting = false;
+
+          if (code === DisconnectReason.connectionReplaced) {
             // Another login took over this session (e.g. a second backend
             // running the same account). Do NOT auto-reconnect — that just
             // fights the other session in a loop and never settles.
             console.log("[WhatsApp] Connection replaced by another session — not reconnecting");
-            this.connecting = false;
             this.qrDataUrl = null;
-          } else {
-            // Code 515 ("restart required") fires immediately after a successful
-            // pairing/login while the PHONE is still waiting on the link. Any
-            // delay here lets the phone time out with "Couldn't link device",
-            // even though the backend would have finished. So reconnect instantly
-            // on 515; use a short backoff for ordinary network drops.
-            const restartRequired = code === DisconnectReason.restartRequired;
-            console.log(
-              `[WhatsApp] Connection closed (code ${code ?? "?"}) — reconnecting ${restartRequired ? "now" : "shortly"}...`,
-            );
-            this.connecting = false;
-            const reconnectGen = myGen;
-            setTimeout(() => {
-              // Skip if a logout/relink superseded this socket meanwhile.
-              if (reconnectGen === this.generation) this.connect().catch(() => {});
-            }, restartRequired ? 0 : 3000);
+            return;
           }
+
+          // WhatsApp emits a 401/loggedOut as part of the pair-success handshake.
+          // The FIRST one (before we have ever reached "open") is NOT a real
+          // logout — it precedes the 515 restart. Only a logout AFTER a real
+          // connection, or creds that keep failing (3 strikes, never opened),
+          // count as a real logout that should wipe the session.
+          const isLoggedOut = code === DisconnectReason.loggedOut || code === 401;
+          if (isLoggedOut) this.consecutive401s++;
+          else this.consecutive401s = 0;
+          const credsAreDead = this.consecutive401s >= 3;
+          const isPostPairRestart = !this.hasEverConnected && !credsAreDead;
+          const isRealLogout = (isLoggedOut && this.hasEverConnected) || credsAreDead;
+
+          if (isRealLogout) {
+            console.log(`[WhatsApp] Real logout (credsDead=${credsAreDead}) — clearing session`);
+            this._clearAuth();
+            this.qrDataUrl = null;
+            return;
+          }
+
+          // Reconnect. 515 ("restart required") and the post-pair restart fire
+          // immediately after a successful pairing while the PHONE is still
+          // waiting on the link — reconnect FAST so the handshake finishes before
+          // the phone times out with "Couldn't link device". Use a short backoff
+          // for ordinary network drops.
+          const fastReconnect =
+            code === DisconnectReason.restartRequired || code === 515 || isPostPairRestart;
+          this.reconnectCount++;
+          const delay = fastReconnect ? 0 : Math.min(this.reconnectCount * 3000, 30000);
+          console.log(
+            `[WhatsApp] Connection closed (code ${code ?? "?"}) — reconnecting ${fastReconnect ? "now" : `in ${delay}ms`} (attempt ${this.reconnectCount}, postPair=${isPostPairRestart})`,
+          );
+          const reconnectGen = myGen;
+          setTimeout(() => {
+            // Skip if a logout/relink superseded this socket meanwhile.
+            if (reconnectGen === this.generation) this.connect().catch(() => {});
+          }, delay);
         }
       });
     } catch (e: any) {
@@ -203,6 +247,17 @@ class WhatsAppEngine {
 
   private _clearAuth(): void {
     try { fs.rmSync(WA_AUTH_DIR, { recursive: true, force: true }); } catch {}
+    // Reset ALL per-session lifecycle state so the NEXT pairing starts clean.
+    // Critical: hasEverConnected must go back to false. Otherwise, after a prior
+    // successful connect in this same process, the first post-pair 401 of a
+    // re-link would be mistaken for a real logout and wipe the new session — the
+    // exact bug this guards against. Every auth-destroying path (fresh relink,
+    // real-logout close branch, logout()) funnels through here.
+    this.hasEverConnected = false;
+    this.consecutive401s = 0;
+    this.reconnectCount = 0;
+    this.me = null;
+    this.socketReady = false;
   }
 
   async logout(): Promise<void> {

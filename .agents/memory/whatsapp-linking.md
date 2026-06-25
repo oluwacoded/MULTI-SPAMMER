@@ -78,6 +78,34 @@ in ~3s with NO 409/connectionReplaced; the engine also connects fine locally
 (`connected to WA` + valid QR). The handshake is NOT the bug — never go looking for
 one there; the fix space is the control-bot UX + getting the user to republish.
 
+## The post-pairing 401/loggedOut IS part of the handshake — reconnect through it
+**Confirmed by diffing the user's original working bot** (`server.js`
+connection.update). WhatsApp emits a single `401`/`loggedOut` close event as PART
+of the pair-success handshake, right before the `515` "restart required". If the
+engine wipes `whatsapp-auth/` on ANY `loggedOut` code and does not reconnect, it
+destroys the half-paired session at exactly that moment → the link never completes
+(presents as "connects to the bot but not to WhatsApp").
+
+**Decision logic (ported from the original):**
+- Track `hasEverConnected` (true on `connection==="open"`) and `consecutive401s`.
+- `credsAreDead = consecutive401s >= 3` (creds that keep 401ing, never open).
+- `isPostPairRestart = !hasEverConnected && !credsAreDead` → NOT a real logout; reconnect FAST.
+- `isRealLogout = (loggedOut && hasEverConnected) || credsAreDead` → only THEN wipe auth + stop.
+- Reconnect immediately on `515` OR `isPostPairRestart`; short backoff otherwise; never on `440`.
+
+**Gotcha — reset lifecycle state on EVERY auth clear.** `hasEverConnected` is
+sticky. If it stays true after a logout/relink, a later re-pair in the SAME process
+treats its first post-pair 401 as a real logout and wipes the new session
+(re-creates the bug). Funnel every auth-destroying path (fresh relink, real-logout
+wipe, `logout()`) through one `_clearAuth()` that resets `hasEverConnected=false`,
+`consecutive401s=0`, `reconnectCount=0` (and `me`/`socketReady`).
+
+**Stability: cache the signal keys.** Wrap `state.keys` in
+`makeCacheableSignalKeyStore(keys, silentPinoLogger)` (keep `state.creds` raw).
+Reading signal keys from disk on every decrypt races with `creds.update` writes and
+makes libsignal reject the MAC ("Bad MAC"), dropping the session mid-handshake.
+Match the original's `browser: Browsers.windows("Chrome")` fingerprint.
+
 ## Operational note: one bot token = one backend
 The Telegram control bot runs *inside* the api-server. There is a single
 `TELEGRAM_CONTROL_BOT_TOKEN`. Running the backend on Railway and Replit at the
