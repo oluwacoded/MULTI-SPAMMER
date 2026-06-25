@@ -68,6 +68,16 @@ destroying the working session. So the control bot's pairing flow must POLL
 message, telling the user to ignore the phone error and NOT log out. Without that
 confirmation the user has no positive signal and assumes failure.
 
+**Also guard the Logout button.** The smoking gun is a manual `Intentional Logout`
+(POST `/whatsapp/logout`) ~75s after a successful connect — the user taps the
+control bot's one-tap Logout to "retry" after seeing the phone error, wiping a
+working session. So the bot's `wa_logout` must check status first and require a
+confirm tap when connected (fall through to immediate logout only when already
+disconnected). Re-verified yet again this round: deploy logs show pairing→connected
+in ~3s with NO 409/connectionReplaced; the engine also connects fine locally
+(`connected to WA` + valid QR). The handshake is NOT the bug — never go looking for
+one there; the fix space is the control-bot UX + getting the user to republish.
+
 ## Operational note: one bot token = one backend
 The Telegram control bot runs *inside* the api-server. There is a single
 `TELEGRAM_CONTROL_BOT_TOKEN`. Running the backend on Railway and Replit at the

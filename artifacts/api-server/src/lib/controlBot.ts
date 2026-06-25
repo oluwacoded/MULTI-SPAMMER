@@ -852,6 +852,29 @@ export function startControlBot(): void {
 
   bot.callbackQuery("wa_logout", async (ctx) => {
     await ctx.answerCallbackQuery();
+    // Logging out unlinks the device and wipes the session. Users often tap this
+    // by mistake right after pairing (when the phone shows a transient "Couldn't
+    // link device"), nuking a session that actually connected. Require a confirm.
+    const st = await api("GET", "/whatsapp/status");
+    if (!st.connected) {
+      await api("POST", "/whatsapp/logout");
+      await ctx.reply("🚪 WhatsApp logged out.");
+      return;
+    }
+    await ctx.reply(
+      "⚠️ You're currently linked. Logging out will UNLINK this device and you'll " +
+        "have to pair again.\n\nIf your phone just showed “Couldn't link device”, " +
+        "ignore it — you're actually connected. Only log out if you really mean to.",
+      {
+        reply_markup: new InlineKeyboard()
+          .text("🚪 Yes, log out", "wa_logout_confirm")
+          .text("↩️ Keep linked", "wa_status"),
+      },
+    );
+  });
+
+  bot.callbackQuery("wa_logout_confirm", async (ctx) => {
+    await ctx.answerCallbackQuery();
     await api("POST", "/whatsapp/logout");
     await ctx.reply("🚪 WhatsApp logged out.");
   });
