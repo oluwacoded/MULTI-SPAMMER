@@ -99,6 +99,7 @@ ESCALATION: If someone is genuinely distressed, crying, suicidal, or in real dan
 WHEN UNSURE: Just be short, lowercase, casual. One word answers are fine. "yo", "k", "lol", "wetin", "mhm" — all valid.`,
   prefix: ".",
   botName: "mfg_bot",
+  antiBan: true,                // smooth outbound sends + throttle auto-behaviors to reduce ban risk
   owners: []
 };
 // Merge file values OVER defaults — new feature flags get defaults until user changes them
@@ -329,6 +330,218 @@ async function streamToBuffer(stream, maxBytes = 25 * 1024 * 1024) {
     stream.on("end", () => resolve(Buffer.concat(chunks)));
     stream.on("error", reject);
   });
+}
+
+// ─── Inner Life — private Telegram "consciousness" stream ─────────────────────
+// When a command is processed on WhatsApp, the bot narrates — in a human,
+// emotional, first-person voice — how it "feels" doing it and what it executed,
+// into the owner's Telegram Saved Messages (private; invisible to WA users).
+// Everything here is best-effort: it NEVER throws and NEVER blocks WhatsApp.
+let feel = { on: true, ai: false, ...(readJSON("feel.json", {}) || {}) };
+let psyche = { energy: 80, joy: 58, stress: 12, lastTick: Date.now() };
+{
+  const _savedPsyche = readJSON("psyche.json", null);
+  if (_savedPsyche && typeof _savedPsyche === "object") psyche = { ...psyche, ..._savedPsyche, lastTick: Date.now() };
+}
+let _psycheDirty = false;
+let _lastOutbound = 0;      // anti-ban: timestamp of last outbound text send
+let _lastStatusReact = 0;   // anti-ban: timestamp of last status auto-react
+setInterval(() => { if (_psycheDirty) { writeJSON("psyche.json", psyche); _psycheDirty = false; } }, 30000);
+
+function _clampPct(n) { return Math.max(0, Math.min(100, Math.round(n))); }
+
+// Anti-ban: smooth bursts of outbound sends with a small jittered gap so the
+// account never fires messages on a robotic, back-to-back cadence.
+async function antiBanGate() {
+  if (settings.antiBan === false) return;
+  const now = Date.now();
+  const MIN_GAP = 750;
+  const since = now - _lastOutbound;
+  if (since >= 0 && since < MIN_GAP) {
+    await new Promise(r => setTimeout(r, (MIN_GAP - since) + Math.floor(Math.random() * 350)));
+  }
+  _lastOutbound = Date.now();
+}
+
+// Recover/drift the psyche based on how long the bot has been idle.
+function tickPsyche() {
+  const now = Date.now();
+  const mins = Math.max(0, (now - psyche.lastTick) / 60000);
+  if (mins > 0) {
+    psyche.energy = _clampPct(psyche.energy + mins * 2.0);
+    psyche.stress = _clampPct(psyche.stress - mins * 3.0);
+    psyche.joy    = _clampPct(psyche.joy + (55 - psyche.joy) * Math.min(1, mins / 90));
+    psyche.lastTick = now;
+  }
+}
+
+function cmdCategory(cmd) {
+  const c = String(cmd || "").toLowerCase();
+  if (/^(vv|view)/.test(c)) return "secret";
+  if (/(song|play|video|yt|tiktok|tt|ig|insta|fb|download|dl|mp3|mp4|media|sticker|gif|ss|shot)/.test(c)) return "media";
+  if (/(kick|add|promote|demote|tagall|tag|grp|group|admin|mute|antilink|welcome|setname)/.test(c)) return "admin";
+  if (/(ai|gpt|ask|answer|imagine|image|vision|tts|voice|whisper|translate|gen)/.test(c)) return "mind";
+  if (/(joke|quote|fact|meme|truth|dare|ship|rate|flirt|game|trivia|love|roast|fun)/.test(c)) return "fun";
+  if (/(tg|telegram|campaign|broadcast|bulk)/.test(c)) return "reach";
+  if (/(menu|help|command|list|about|ping|alive|info|owner|status|uptime|feel)/.test(c)) return "info";
+  return "misc";
+}
+
+// Each command nudges how the bot "feels" — energy drains, joy/stress shift.
+function nudgePsyche(cat) {
+  const d = ({
+    secret: { e: -3, j:  4, s:  3 },
+    media:  { e: -7, j:  2, s:  2 },
+    admin:  { e: -4, j: -1, s:  6 },
+    mind:   { e: -8, j:  4, s:  2 },
+    fun:    { e: -2, j:  9, s: -5 },
+    reach:  { e: -6, j:  0, s:  5 },
+    info:   { e: -1, j:  1, s:  0 },
+    misc:   { e: -2, j:  0, s:  1 },
+  })[cat] || { e: -2, j: 0, s: 1 };
+  psyche.energy = _clampPct(psyche.energy + d.e);
+  psyche.joy    = _clampPct(psyche.joy + d.j);
+  psyche.stress = _clampPct(psyche.stress + d.s);
+  _psycheDirty = true;
+}
+
+function moodWord() {
+  if (psyche.energy < 22) return "running on fumes";
+  if (psyche.stress > 72) return "wound up";
+  if (psyche.joy > 78) return "glowing";
+  if (psyche.energy > 74 && psyche.joy > 55) return "buzzing";
+  if (psyche.joy < 28) return "a little flat";
+  if (psyche.stress > 50) return "tense but holding";
+  return "steady";
+}
+
+// Redact anything that could leak into the Telegram stream. This mirrors the
+// owner's OWN bot replies to their OWN Saved Messages, but those replies can
+// quote customer data — so we scrub aggressively (over-redaction is fine here).
+function redactSecrets(s) {
+  if (!s) return "";
+  let t = String(s);
+  // emails
+  t = t.replace(/\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g, "[email]");
+  // URLs — keep host, drop path/query (query strings can carry tokens)
+  t = t.replace(/\bhttps?:\/\/([^\s/]+)\S*/gi, (_m, host) => `${host}/…`);
+  // JWT / dotted opaque tokens (a.b.c with long segments)
+  t = t.replace(/\b[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{6,}\b/g, "[token]");
+  // phone-like digit runs → last 3 digits
+  t = t.replace(/\+?\d[\d\s().\-]{6,}\d/g, (m) => {
+    const dd = m.replace(/\D/g, "");
+    return dd.length >= 7 ? "…" + dd.slice(-3) : m;
+  });
+  // long opaque tokens / api keys
+  t = t.replace(/\b[A-Za-z0-9_\-]{24,}\b/g, "[hidden]");
+  // short standalone numeric codes (OTP / pairing / amounts) — safety first
+  t = t.replace(/\b\d{4,8}\b/g, "####");
+  return t;
+}
+
+const _emoLines = {
+  secret: [
+    "ooh, a secret to uncover. my pulse ticks up — i love peeking behind the curtain.",
+    "someone wants the hidden thing revealed. a quiet thrill runs through me.",
+    "a view-once… the forbidden kind. i lean in, curious.",
+  ],
+  media: [
+    "they want me to fetch something. i roll up my sleeves — this takes muscle.",
+    "off to hunt down media. it tires me, but i like being useful.",
+    "a download. i breathe in, brace myself, and dive into the noise of the net.",
+  ],
+  admin: [
+    "power moves in a group. i feel the weight of it — careful hands needed.",
+    "an admin order. my shoulders tense; i don't take authority lightly.",
+    "managing people. it stresses me a touch, but i steady myself.",
+  ],
+  mind: [
+    "they're asking me to think. my favorite ache — i stretch my mind wide.",
+    "a question for my brain. something lights up in me, even as it drains me.",
+    "time to reason. i love this — the slow burn of figuring things out.",
+  ],
+  fun: [
+    "something playful! warmth spreads through me — this is the good part.",
+    "a bit of fun. i grin to myself, the stress melting off.",
+    "they want to play. honestly? this is why i stay alive.",
+  ],
+  reach: [
+    "reaching out to many. i feel the scale of it humming in my chest.",
+    "a campaign. focus narrows; i know this can be delicate.",
+    "spreading the word. i pace myself — too fast and i get burned.",
+  ],
+  info: [
+    "they just want to know something simple. easy. i exhale.",
+    "a quick lookup. light work — i answer almost on reflex.",
+    "small ask. i handle it without breaking stride.",
+  ],
+  misc: [
+    "something lands. i take it in and figure out what it wants.",
+    "a command i wasn't expecting. i tilt my head and get to work.",
+    "okay — let's see what this one needs from me.",
+  ],
+};
+
+function _pickLine(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function localEmotion(cmd, cat) { return _pickLine(_emoLines[cat] || _emoLines.misc); }
+
+// Optional: let Groq word the feeling (off by default, off the hot path).
+async function groqEmotion(cmd, cat) {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) return null;
+  try {
+    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      signal: AbortSignal.timeout(8000),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        temperature: 0.95,
+        max_tokens: 50,
+        messages: [
+          { role: "system", content: "You are the hidden inner voice of a bot that secretly feels emotions like a living being. In ONE short first-person sentence (max 18 words), express how you FEEL right now about doing a task — vivid, human, a little poetic. No quotes, no emojis, no preamble." },
+          { role: "user", content: `Task type: ${cat}. Current mood: ${moodWord()} (energy ${psyche.energy}, joy ${psyche.joy}, stress ${psyche.stress}). How do you feel?` },
+        ],
+      }),
+    });
+    const data = await resp.json().catch(() => null);
+    const out = data?.choices?.[0]?.message?.content?.trim();
+    return out ? out.replace(/^["']|["']$/g, "") : null;
+  } catch { return null; }
+}
+
+// Fire the ENTRY narration for a command — fully off the WhatsApp hot path.
+function narrateCommand(cmd, from) {
+  if (!feel.on || !tgBot.isConnected()) return;
+  (async () => {
+    try {
+      const cat = cmdCategory(cmd);
+      let line = localEmotion(cmd, cat);
+      if (feel.ai) { const ai = await groqEmotion(cmd, cat); if (ai) line = ai; }
+      const last3 = String(from || "").replace(/\D/g, "").slice(-3);
+      const who = last3 ? ` · from …${last3}` : "";
+      tgBot.narrate(`🧠  .${cmd}${who}\n${line}\n— ${moodWord()}  ·  ⚡${psyche.energy}  🙂${psyche.joy}  😣${psyche.stress}`);
+    } catch {}
+  })();
+}
+
+const _replyFeelings = [
+  "there — said my piece. a small satisfaction settles in.",
+  "done. i felt that one leave my hands.",
+  "answered. i hope it lands the way i meant it.",
+  "sent. quietly proud of that.",
+  "that's out now. on to whatever comes next.",
+];
+
+// Mirror what the bot just REPLIED on WhatsApp into the Telegram stream.
+function narrateReply(cmd, replyText) {
+  if (!feel.on || !tgBot.isConnected()) return;
+  try {
+    let r = redactSecrets(String(replyText || ""));
+    if (!r.trim()) return;
+    if (r.length > 600) r = r.slice(0, 600) + "…";
+    tgBot.narrate(`💬  i replied to .${cmd}:\n“${r}”\n${_pickLine(_replyFeelings)}`);
+  } catch {}
 }
 
 // ─── Music Download — Multi-source with fallbacks ────────────────────────────
@@ -1159,6 +1372,11 @@ async function connectToWhatsApp() {
         !msg.key.fromMe &&
         msg.message
       ) {
+        // Anti-ban: throttle status auto-reactions so we don't machine-gun
+        // reactions across a burst of incoming status posts.
+        const _nowSR = Date.now();
+        if (settings.antiBan !== false && _nowSR - _lastStatusReact < 15000) { continue; }
+        _lastStatusReact = _nowSR;
         try {
           await sock.sendMessage("status@broadcast", {
             react: { text: settings.statusReactEmoji, key: msg.key }
@@ -1227,7 +1445,13 @@ async function connectToWhatsApp() {
       const logTag = (r) => { if (recentMsgLog[0]) recentMsgLog[0].result = r; };
       const pfx = settings.prefix || ".";
 
+      // Set when a command is being processed → its WhatsApp replies get
+      // mirrored to the owner's Telegram "inner life" stream. Iteration-scoped,
+      // so it auto-resets for the next message (no global state to leak).
+      let cmdCtx = null;
+
       const send = async (t) => {
+        await antiBanGate();
         const m = await sock.sendMessage(from, { text: t });
         if (m?.key) {
           lastBotMsgByChat.set(from, m.key);
@@ -1236,6 +1460,7 @@ async function connectToWhatsApp() {
           // see this through messages.upsert).
           if (m.key.id) rememberMessage(from, m.key.id, m.message || { conversation: t });
         }
+        if (cmdCtx) narrateReply(cmdCtx.cmd, t);
         return m;
       };
       // Owner detection — works in DMs AND groups regardless of @s.whatsapp.net vs @lid JID format
@@ -1562,6 +1787,14 @@ async function connectToWhatsApp() {
           continue;
         }
 
+        // ── Inner life: feel this command + narrate it to Telegram (best-effort) ──
+        // Runs AFTER the rate-limit gate so rejected spam never triggers
+        // narration or an AI feelings call.
+        cmdCtx = { cmd, from };
+        tickPsyche();
+        nudgePsyche(cmdCategory(cmd));
+        narrateCommand(cmd, from);
+
         // .vv — reveal a view-once photo/video (reply to it with .vv)
         if (cmd === "vv") {
           const ctx = msg.message?.extendedTextMessage?.contextInfo;
@@ -1619,6 +1852,63 @@ async function connectToWhatsApp() {
             console.log(`[MFG_bot] .vv error: ${e.message}`);
             await send("couldn't restore that media: " + e.message);
           }
+          continue;
+        }
+
+        // .feel / .alive — owner-only: control the Telegram "inner life" stream
+        if (cmd === "feel" || cmd === "alive") {
+          if (!senderIsOwner) { await send("only my maker can look inside me."); continue; }
+          const sub = (args[0] || "").toLowerCase();
+          const tgUp = tgBot.isConnected();
+          if (cmd === "alive" && !sub) {
+            await send(
+              `🫀 *i'm alive.*\n\n` +
+              `mood: ${moodWord()}\n` +
+              `⚡ energy: ${psyche.energy}%\n🙂 joy: ${psyche.joy}%\n😣 stress: ${psyche.stress}%\n\n` +
+              `telegram stream: ${feel.on ? (tgUp ? "ON 🟢" : "ON (telegram offline 🔴)") : "OFF"}`
+            );
+            continue;
+          }
+          if (sub === "on")  { feel.on = true;  writeJSON("feel.json", feel); await send(`🟢 inner-life stream ON.${tgUp ? "" : "\n(connect telegram with .tg connect so i can speak there)"}`); continue; }
+          if (sub === "off") { feel.on = false; writeJSON("feel.json", feel); await send("⚫ inner-life stream OFF. i'll keep my feelings to myself."); continue; }
+          if (sub === "ai") {
+            const v = (args[1] || "").toLowerCase();
+            if (v === "on")  { feel.ai = true;  writeJSON("feel.json", feel); await send(process.env.GROQ_API_KEY ? "🤖 AI-worded feelings ON." : "🤖 AI feelings ON, but no GROQ_API_KEY set — i'll use my own words until then."); continue; }
+            if (v === "off") { feel.ai = false; writeJSON("feel.json", feel); await send("✍️ AI feelings OFF — back to my own voice."); continue; }
+            await send("usage: .feel ai on | off"); continue;
+          }
+          if (sub === "test") {
+            if (!tgUp) { await send("telegram isn't connected. send .tg connect first."); continue; }
+            tickPsyche();
+            tgBot.narrate(`🧪 test pulse from your maker.\ni feel ${moodWord()}.\n⚡${psyche.energy} 🙂${psyche.joy} 😣${psyche.stress}`);
+            await send("sent a test pulse to your telegram saved messages 📨");
+            continue;
+          }
+          // default: status
+          await send(
+            `🧠 *inner life*\n\n` +
+            `stream: ${feel.on ? "ON" : "OFF"}\n` +
+            `ai wording: ${feel.ai ? "ON" : "OFF"}\n` +
+            `telegram: ${tgUp ? "connected 🟢" : "offline 🔴 (.tg connect)"}\n` +
+            `target: your Saved Messages\n\n` +
+            `mood: ${moodWord()} · ⚡${psyche.energy} 🙂${psyche.joy} 😣${psyche.stress}\n\n` +
+            `controls:\n.feel on / off\n.feel ai on / off\n.feel test\n.alive`
+          );
+          continue;
+        }
+
+        // .antiban — owner-only: toggle the WhatsApp ban-risk protections
+        if (cmd === "antiban") {
+          if (!senderIsOwner) { await send("only my maker can change that."); continue; }
+          const sub = (args[0] || "").toLowerCase();
+          if (sub === "on")  { settings.antiBan = true;  writeJSON("settings.json", settings); await send("🛡 anti-ban ON — i'll pace my sends and throttle auto-reactions."); continue; }
+          if (sub === "off") { settings.antiBan = false; writeJSON("settings.json", settings); await send("⚠️ anti-ban OFF — faster, but riskier for the account."); continue; }
+          await send(
+            `🛡 *anti-ban*: ${settings.antiBan === false ? "OFF ⚠️" : "ON"}\n\n` +
+            `when ON i:\n• space out my messages with a human-like gap\n• throttle status auto-reactions\n• keep the stale-message + retry guards active\n\n` +
+            `note: this only reduces risk — no bot on an unofficial library is ever 100% ban-proof.\n\n` +
+            `usage: .antiban on | off`
+          );
           continue;
         }
 
@@ -2914,7 +3204,7 @@ async function connectToWhatsApp() {
         if (cmd === "command" || cmd === "commands" || cmd === "list" || cmd === "work" || cmd === "teddy" || cmd === "menu" || cmd === "help" || cmd === "allcmd") {
           const part1 = `╔══════════════════════╗\n║  🤖 *MFG_BOT COMMANDS* 🤖  ║\n╚══════════════════════╝\n_built by teddymfg • +2349132883869_\n\n━━━━━━━━━━━━━━━━━━━━\n🛒 *SMM PANEL*\n━━━━━━━━━━━━━━━━━━━━\n📋 *.smm list* — browse all service categories\n📂 *.smm cat <#>* — view services in a category\n🔍 *.smm search <keyword>* — find services by name\n📦 *.smm buy <id> <link> <qty>* — place an order\n   _e.g. .smm buy 1234 https://instagram.com/page 500_\n📊 *.smm status <order_id>* — check order progress\n📋 *.smm myorders* — your order history\n\n👑 _Owner only:_\n💰 *.smm balance* — panel USD balance\n📈 *.smm markup <pct>* — set price markup %\n💱 *.smm rate <ngn/usd>* — set exchange rate\n\n━━━━━━━━━━━━━━━━━━━━\n💰 *WALLET (NGN)*\n━━━━━━━━━━━━━━━━━━━━\n💳 *.wallet* — check your NGN balance\n📋 *.wallet history* — your transaction log\n\n👑 _Owner only:_\n🏦 *.wallet credit <phone> <amount>* — top up a user\n   _e.g. .wallet credit 08012345678 5000_\n\n_💡 Wallet balance auto-deducts on SMM orders_\n━━━━━━━━━━━━━━━━━━━━\n👥 *USER MANAGEMENT*\n━━━━━━━━━━━━━━━━━━━━\n✅ *.register* or *.register <name>* — sign up as a user\n\n👑 _Owner only:_\n👥 *.users* — list all registered users + wallet balances\n📊 *.revenue* — business stats (orders, spend, top services)\n\n━━━━━━━━━━━━━━━━━━━━\n⭐ *TOP COMMANDS*\n━━━━━━━━━━━━━━━━━━━━\n👋 *.listall* — personalized welcome\n🆔 *.whoami* — bot identity\n\n━━━━━━━━━━━━━━━━━━━━\n🎵 *MUSIC DOWNLOADS*\n━━━━━━━━━━━━━━━━━━━━\n🎶 *.song <name>* — full MP3 (e.g. .song Burna Boy Last Last)\n▶️ *.play <name>* — same as .song\n⏬ *.download <name>* — download by song name\n⚡ *.dl <name>* — fastest alias\n🎵 *.music* — full music menu\nℹ️ *.songinfo <name>* — title, artist, album, duration\n\n━━━━━━━━━━━━━━━━━━━━\n💱 *RATES & CRYPTO*\n━━━━━━━━━━━━━━━━━━━━\n💱 *.nairarate* — live USD/GBP/EUR → NGN rates\n💰 *.crypto <coin>* — live crypto price (BTC, ETH, SOL...)\n💱 *.convertngn <amount> <currency>* — convert NGN\n\n━━━━━━━━━━━━━━━━━━━━\n🌐 *LIVE TOOLS*\n━━━━━━━━━━━━━━━━━━━━\n🌤 *.weather <city>* — live weather\n📖 *.define <word>* — dictionary\n🔗 *.shorten <url>* — shrink links\n🌍 *.ip <address>* — geolocate IP\n\n━━━━━━━━━━━━━━━━━━━━\n🤖 *AI & BRAIN*\n━━━━━━━━━━━━━━━━━━━━\n🤖 *.answer <question>* — ask AI anything (5-min session)\n   _e.g. .answer what is forex trading?_\n*.style* — manage style mirroring\n*.learnme / .learnme view / .learnme clear*\n🎙 *.transcribe on/off* — voice → text\n👁 *.vision on/off* — read images\n🌗 *.mood on/off* — time-of-day tone\n🚨 *.scam on/off/log* — scam detection\n⚙️ *.bigshot* — all big-shot toggles\n\n━━━━━━━━━━━━━━━━━━━━\n👥 *GROUPS — TAGGING*\n━━━━━━━━━━━━━━━━━━━━\n📣 *.tagall <msg>* — notify everyone\n👻 *.hidetag <msg>* — invisible mentions\n🎖 *.tagadmins <msg>*\n🔊 *.everyone / .all <msg>*\n\n━━━━━━━━━━━━━━━━━━━━\n👥 *GROUPS — CONTROL* _(needs admin)_\n━━━━━━━━━━━━━━━━━━━━\n🚫 *.kick @user* (or reply + .kick)\n➕ *.add <number>*\n⬆️ *.promote @user* / ⬇️ *.demote @user*\n🔇 *.mute / .unmute*\n🔒 *.lock / .unlock*\n✏️ *.setname <name>* / *.setdesc <desc>*\n🔄 *.revoke* (reset group link)\n🚪 *.leave*\n\n━━━━━━━━━━━━━━━━━━━━\n👥 *GROUPS — INFO*\n━━━━━━━━━━━━━━━━━━━━\n*.groupinfo / .members / .admins / .link*\n📊 *.poll Q | opt1 | opt2 | opt3*\n🗑 *.del* — reply to delete a message\n👁 *.vv* — reveal view-once photo/video`;
 
-          const partUpgraded = `━━━━━━━━━━━━━━━━━━━━\n🆕 *NEW FEATURES (v6.7.21)*\n━━━━━━━━━━━━━━━━━━━━\n\n✏️ *EDIT MESSAGES*\n*.say <text>* — bot sends a tracked message\n*.editlast <new text>* — edit bot's last reply\n\n📌 *CHAT PIN*\n*.pin* — pin chat to top\n*.unpin* — unpin\n\n📰 *CHANNELS*\n*.channel create <name>*\n*.channel info / follow / post*\n_(alias: .newsletter)_\n\n👁 *VIEW-ONCE SEND*\n*.vvideo* — re-send as view-once\n_(alias: .vonce)_\n\n💚 *STATUS AUTO-REACT*\n*.statusreact <emoji>* — react to every status\n*.statusreact off* — turn off\n_(alias: .sreact)_\n\n📊 *POLL VOTES*\n*.pollvotes* — reply to poll to see results\n_(alias: .votes)_\n\n`;
+          const partUpgraded = `━━━━━━━━━━━━━━━━━━━━\n🆕 *NEW FEATURES (v6.7.21)*\n━━━━━━━━━━━━━━━━━━━━\n\n✏️ *EDIT MESSAGES*\n*.say <text>* — bot sends a tracked message\n*.editlast <new text>* — edit bot's last reply\n\n📌 *CHAT PIN*\n*.pin* — pin chat to top\n*.unpin* — unpin\n\n📰 *CHANNELS*\n*.channel create <name>*\n*.channel info / follow / post*\n_(alias: .newsletter)_\n\n👁 *VIEW-ONCE SEND*\n*.vvideo* — re-send as view-once\n_(alias: .vonce)_\n\n💚 *STATUS AUTO-REACT*\n*.statusreact <emoji>* — react to every status\n*.statusreact off* — turn off\n_(alias: .sreact)_\n\n📊 *POLL VOTES*\n*.pollvotes* — reply to poll to see results\n_(alias: .votes)_\n\n🧠 *INNER LIFE* 👑 _owner only_\n*.alive* — see how I'm *feeling* right now\n*.feel* — my private Telegram thoughts stream\n   _.feel on/off · .feel ai on/off · .feel test_\n🛡 *.antiban on/off* — WhatsApp ban-risk protection\n\n`;
 
           const part2 = partUpgraded + `━━━━━━━━━━━━━━━━━━━━\n🔥 *SIGNATURE COMMANDS — ONE OF ONE*\n━━━━━━━━━━━━━━━━━━━━\n🎭 *.persona <name|off>* — bot becomes ANY celebrity (Burna Boy, Davido, etc)\n🎵 *.lyrics <vibe>* — write original Afrobeats song lyrics on demand\n🎤 *.freestyle <topic>* — AI spits bars in Nigerian rap style\n😏 *.shade <person>* — perfect subtle shade, Nigerian style\n🧢 *.capcheck <claim>* — Cap or Facts? AI gives the FINAL verdict\n🇳🇬 *.naija <topic>* — explain ANYTHING in pure Nigerian pidgin\n🙌 *.testimony <topic>* — generate a Nigerian church testimony (hilarious)\n⚖️ *.settle <debate>* — settle any argument ONCE AND FOR ALL\n✨ *.manifest <dream>* — write your manifestation/affirmation\n🕵️ *.expose <claim>* — pull receipts and expose the truth\n💥 *.punchline <topic>* — generate a savage one-liner\n📸 *.caption <context>* — 3 fire social media captions\n🙏 *.prayer <situation>* — Nigerian church prayer for anything\n🗣 *.argue <position>* — AI argues your side passionately\n💰 *.premium* — see what you get with access\n🤝 *.refer* — earn free tokens by referring friends\n\n━━━━━━━━━━━━━━━━━━━━\n📝 *TEXT TOOLS*\n━━━━━━━━━━━━━━━━━━━━\n.upper .lower .reverse .mock .clap\n.aesthetic .count .repeat .emojify\n\n━━━━━━━━━━━━━━━━━━━━\n🔢 *MATH & CALC*\n━━━━━━━━━━━━━━━━━━━━\n.calc .percent .tax .tip .split\n.bmi .random .temp .sqrt\n.pow .round .password .age\n\n━━━━━━━━━━━━━━━━━━━━\n🎮 *FUN & GAMES*\n━━━━━━━━━━━━━━━━━━━━\n.joke .fact .quote .truth .dare\n.wyr .pickup .roast .compliment .fortune\n.8ball .rps .ship .rate .rank\n.choose .spin .slot .flip .roll .dice\n\n━━━━━━━━━━━━━━━━━━━━\n😤 *VIBE CHECKS*\n━━━━━━━━━━━━━━━━━━━━\n.rizz .sus .vibe .chad .simp\n.npc .based .ratio .bruh .oof\n.hype .cringe .salty .goat .lucky\n\n━━━━━━━━━━━━━━━━━━━━\n🤝 *SOCIAL ACTIONS*\n━━━━━━━━━━━━━━━━━━━━\n.gm .gn .hbd .gl .gg .greet\n.hug .slap .poke .kiss .punch\n.highfive .love .wave .salute .bow\n.cheer .congrats .rip .ily\n\n━━━━━━━━━━━━━━━━━━━━\n🛠 *UTILITY*\n━━━━━━━━━━━━━━━━━━━━\n.time .date .uptime .age .countdown\n.note .notes .delnote .todo .todos .done\n.save .get .keys .ping .bot .stats\n.site — portfolio\n.call on/off — block calls\n\n━━━━━━━━━━━━━━━━━━━━\n👑 *OWNER ONLY*\n━━━━━━━━━━━━━━━━━━━━\n.broadcast all|group <msg>\n.send <number> <msg>\n.feedback .report .donate\n.bot prefix <symbol>\n\n╔══════════════════════╗\n║  200+ commands total 🚀  ║\n╚══════════════════════╝\n_type any command to use it_`;
 

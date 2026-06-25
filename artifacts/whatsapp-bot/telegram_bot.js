@@ -169,6 +169,41 @@ async function getMe() {
   try { return await tgClient.getMe(); } catch { return null; }
 }
 
+// ─── Narration ("inner life" stream → owner's Saved Messages) ────────────────
+// Best-effort: NEVER throws. Self-queued with spacing so rapid commands don't
+// trip Telegram's flood limits. Default target is "me" — the owner's own Saved
+// Messages — a private channel invisible to everyone else.
+const _narrateQ = [];
+let _narrateBusy = false;
+const _NARRATE_GAP = 1100;
+
+async function _drainNarrate() {
+  if (_narrateBusy) return;
+  _narrateBusy = true;
+  while (_narrateQ.length) {
+    const text = _narrateQ.shift();
+    try {
+      if (tgClient && tgClient.connected) {
+        await tgClient.sendMessage(tgConfig.feelChat || "me", { message: text });
+      }
+    } catch (e) { /* swallow — narration is best-effort */ }
+    await new Promise(r => setTimeout(r, _NARRATE_GAP));
+  }
+  _narrateBusy = false;
+}
+
+function narrate(text) {
+  try {
+    if (!text || !tgClient || !tgClient.connected) return false;
+    let t = String(text);
+    if (t.length > 1500) t = t.slice(0, 1500) + "…";
+    _narrateQ.push(t);
+    if (_narrateQ.length > 40) _narrateQ.shift(); // drop oldest on overflow
+    _drainNarrate().catch(() => {});
+    return true;
+  } catch { return false; }
+}
+
 // ─── campaign ──────────────────────────────────────────────────────────────
 
 const TG_RATE    = 30;        // messages per minute (safe for userbot)
@@ -293,7 +328,7 @@ async function disconnect() {
 module.exports = {
   connect, autoConnect, disconnect,
   isConnected, getMe, getConfig, getApiId, getApiHash,
-  saveConfig,
+  saveConfig, narrate,
   resolveCode, resolve2FA,
   startCampaign, stopCampaign, getCampaignStatus, parseVCF,
 };
