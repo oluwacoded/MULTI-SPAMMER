@@ -179,6 +179,22 @@ class WhatsAppEngine {
             return;
           }
 
+          // QR / pairing window expired unscanned (Baileys: "QR refs attempts
+          // ended", close code 408) on a session that has NEVER linked. Do NOT
+          // auto-reconnect: every reconnect regenerates a fresh device-link
+          // attempt, and looping that HAMMERS WhatsApp's linking endpoint — which
+          // is exactly what triggers the phone-side "Can't link new devices right
+          // now. Try again later." Stop and let the user start one deliberate,
+          // fresh attempt instead of churning link requests in the background.
+          if ((code === 408 || code === DisconnectReason.timedOut) && !this.hasEverConnected) {
+            this.lastError =
+              "The QR/pairing code expired before it was scanned. Tap Connect for a fresh code. If your phone says \"Can't link new devices right now\", remove old linked devices on the phone (WhatsApp → Linked Devices) and wait a few minutes before retrying.";
+            console.log("[WhatsApp] QR/pair window expired unscanned — stopping (no auto-retry, avoids link rate-limit)");
+            this.qrDataUrl = null;
+            this.reconnectCount = 0;
+            return;
+          }
+
           // WhatsApp emits a 401/loggedOut as part of the pair-success handshake.
           // The FIRST one (before we have ever reached "open") is NOT a real
           // logout — it precedes the 515 restart. Only a logout AFTER a real
