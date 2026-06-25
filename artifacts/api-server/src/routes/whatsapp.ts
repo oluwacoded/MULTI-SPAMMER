@@ -10,7 +10,8 @@ router.get("/whatsapp/status", (_req, res) => {
 
 router.post("/whatsapp/connect", async (req, res) => {
   try {
-    await getWhatsAppEngine().connect();
+    const fresh = req.body?.fresh === true || req.body?.fresh === "true";
+    await getWhatsAppEngine().connect({ fresh });
     res.json({ ok: true, message: "Connecting — scan the QR code" });
   } catch (e: any) {
     res.json({ ok: false, message: e.message });

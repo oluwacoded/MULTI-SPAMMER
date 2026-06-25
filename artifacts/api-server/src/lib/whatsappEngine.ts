@@ -28,24 +28,50 @@ class WhatsAppEngine {
   private qrDataUrl: string | null = null;
   private me: any = null;
   private lastError = "";
+  private socketReady = false;
+  private generation = 0;
   private campaign: any = {
     active: false, contacts: [], index: 0, message: "",
     sent: 0, failed: 0, noWhatsapp: 0, startTime: null, timer: null, log: [], options: {},
   };
 
-  async connect(): Promise<void> {
+  async connect(opts: { fresh?: boolean } = {}): Promise<void> {
+    if (opts.fresh) {
+      // A fresh relink is destructive (wipes the session) — never do it while a
+      // campaign is sending.
+      if (this.campaign.active) {
+        throw new Error("Stop the running WhatsApp campaign before re-linking");
+      }
+      // Start a brand-new, unregistered session. Stale/partial auth files are
+      // the most common cause of WhatsApp's "Couldn't link device" error.
+      // Bump the generation BEFORE teardown so any close fired during end() is
+      // already treated as stale (no rogue reconnect / state mutation).
+      this.generation++;
+      try { this.sock?.end?.(new Error("relink")); } catch {}
+      this.sock = null;
+      this.connected = false;
+      this.connecting = false;
+      this.qrDataUrl = null;
+      this._clearAuth();
+    }
     if (this.connecting || this.connected) return;
     this.connecting = true;
+    const myGen = ++this.generation;
+    this.socketReady = false;
     this.lastError = "";
     try {
       const baileys: any = await import("@whiskeysockets/baileys");
       const makeWASocket = baileys.default || baileys.makeWASocket;
-      const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = baileys;
+      const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = baileys;
 
       if (!fs.existsSync(WA_AUTH_DIR)) fs.mkdirSync(WA_AUTH_DIR, { recursive: true });
       const { state, saveCreds } = await useMultiFileAuthState(WA_AUTH_DIR);
       let version: any = undefined;
       try { ({ version } = await fetchLatestBaileysVersion()); } catch {}
+
+      // A newer connect()/relink may have superseded us during the awaits above.
+      // Bail without touching shared state — the newer call owns it.
+      if (myGen !== this.generation) return;
 
       const sock = makeWASocket({
         auth: state,
@@ -53,16 +79,37 @@ class WhatsAppEngine {
         printQRInTerminal: false,
         markOnlineOnConnect: false,
         syncFullHistory: false,
+        browser: Browsers.ubuntu("Chrome"),
       });
+
+      // Re-check before publishing the socket; if superseded, discard it.
+      if (myGen !== this.generation) {
+        try { sock.end?.(new Error("superseded")); } catch {}
+        return;
+      }
       this.sock = sock;
 
-      sock.ev.on("creds.update", saveCreds);
+      // Ignore events from superseded sockets (after a fresh relink or a
+      // reconnect). Without this, an old socket's "close" event would null out
+      // the new socket and could spawn a rogue reconnect mid-pairing.
+      const isStale = () => myGen !== this.generation;
+
+      sock.ev.on("creds.update", async () => {
+        if (isStale()) return;
+        await saveCreds();
+      });
 
       sock.ev.on("connection.update", async (update: any) => {
+        if (isStale()) return;
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
-          try { this.qrDataUrl = await qrcode.toDataURL(qr); } catch {}
+          this.socketReady = true;
+          try {
+            const url = await qrcode.toDataURL(qr);
+            if (!isStale()) this.qrDataUrl = url;
+          } catch {}
         }
+        if (connection === "connecting") this.socketReady = true;
         if (connection === "open") {
           this.connected = true;
           this.connecting = false;
@@ -77,13 +124,17 @@ class WhatsAppEngine {
           this.sock = null;
           if (loggedOut) {
             console.log("[WhatsApp] Logged out — clearing session");
-            try { fs.rmSync(WA_AUTH_DIR, { recursive: true, force: true }); } catch {}
+            this._clearAuth();
             this.connecting = false;
             this.qrDataUrl = null;
           } else {
             console.log("[WhatsApp] Connection closed, reconnecting...");
             this.connecting = false;
-            setTimeout(() => this.connect().catch(() => {}), 3000);
+            const reconnectGen = myGen;
+            setTimeout(() => {
+              // Skip if a logout/relink superseded this socket meanwhile.
+              if (reconnectGen === this.generation) this.connect().catch(() => {});
+            }, 3000);
           }
         }
       });
@@ -105,11 +156,25 @@ class WhatsAppEngine {
       throw new Error("Send your full phone number with country code, e.g. 15551234567");
     }
     if (this.connected) throw new Error("WhatsApp is already connected");
-    if (!this.sock) {
-      await this.connect();
-      // Give Baileys a moment to bring the socket up before requesting a code.
-      await new Promise((r) => setTimeout(r, 2000));
+    // Always pair from a clean, unregistered session — leftover/partial auth
+    // files make WhatsApp reject the link ("Couldn't link device").
+    // connect({ fresh }) also guards against wiping an active campaign.
+    await this.connect({ fresh: true });
+    // Wait until the socket is genuinely ready to register. A QR event means the
+    // noise handshake finished and the unregistered socket can pair — the
+    // strongest readiness signal. Fall back to the weaker "connecting" flag.
+    const deadline = Date.now() + 20000;
+    while (!this.qrDataUrl && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 300));
     }
+    if (!this.qrDataUrl) {
+      const fallback = Date.now() + 5000;
+      while (!this.socketReady && Date.now() < fallback) {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    }
+    // Small settle so Baileys finishes its handshake before we register.
+    await new Promise((r) => setTimeout(r, 1000));
     if (!this.sock) throw new Error("WhatsApp socket not ready — try again in a few seconds");
     if (this.sock.authState?.creds?.registered) {
       throw new Error("This session is already registered");
@@ -121,14 +186,22 @@ class WhatsAppEngine {
     return code;
   }
 
+  private _clearAuth(): void {
+    try { fs.rmSync(WA_AUTH_DIR, { recursive: true, force: true }); } catch {}
+  }
+
   async logout(): Promise<void> {
+    // Invalidate the live socket first so its close/reconnect handler is stale
+    // and won't auto-reconnect after we tear down.
+    this.generation++;
     try { if (this.sock) await this.sock.logout(); } catch {}
     this.sock = null;
     this.connected = false;
     this.connecting = false;
     this.qrDataUrl = null;
     this.me = null;
-    try { fs.rmSync(WA_AUTH_DIR, { recursive: true, force: true }); } catch {}
+    this.socketReady = false;
+    this._clearAuth();
   }
 
   getStatus() {
