@@ -38,6 +38,27 @@ connection after logout.
 `this.sock`), re-check generation and discard the superseded socket. Reconnect
 timers must capture `reconnectGen` and only reconnect if it still matches.
 
+## "Couldn't link device" is often a FALSE alarm (post-pairing restart timeout)
+**The pairing frequently succeeds server-side even when the phone shows the error.**
+Check the deployment logs: if you see `pairing configured successfully` with a real
+`me` id, then `stream errored ... code 515` (restart required), then it reconnects,
+uploads pre-keys, and logs `✅ Connected as <number>`, the device DID link.
+
+**Why the phone still errors:** code 515 fires right after pairing and the phone is
+actively waiting on the link. If the backend takes too long to finish reconnecting
+(slow reconnect delay + transient WebSocket retries + 800+ pre-key upload ≈ 15s),
+the phone times out and shows "Couldn't link device. An error happened."
+
+**Fix:** in the `connection.update` close handler, reconnect *immediately* (0ms) on
+`DisconnectReason.restartRequired` (515) instead of the normal backoff, so the link
+completes inside the phone's wait window. Also do NOT auto-reconnect on
+`connectionReplaced` (440) — that means another login (e.g. a 2nd backend) took
+over, and reconnecting just loops forever fighting it.
+
+**Tell the user:** check WhatsApp → Linked devices for an "Ubuntu/Chrome" entry; if
+it's there it linked despite the on-screen error. Deployment is already a Reserved
+VM (`deploymentTarget = "vm"`), so the socket persists between requests.
+
 ## Operational note: one bot token = one backend
 The Telegram control bot runs *inside* the api-server. There is a single
 `TELEGRAM_CONTROL_BOT_TOKEN`. Running the backend on Railway and Replit at the

@@ -127,14 +127,29 @@ class WhatsAppEngine {
             this._clearAuth();
             this.connecting = false;
             this.qrDataUrl = null;
+          } else if (code === DisconnectReason.connectionReplaced) {
+            // Another login took over this session (e.g. a second backend
+            // running the same account). Do NOT auto-reconnect — that just
+            // fights the other session in a loop and never settles.
+            console.log("[WhatsApp] Connection replaced by another session — not reconnecting");
+            this.connecting = false;
+            this.qrDataUrl = null;
           } else {
-            console.log("[WhatsApp] Connection closed, reconnecting...");
+            // Code 515 ("restart required") fires immediately after a successful
+            // pairing/login while the PHONE is still waiting on the link. Any
+            // delay here lets the phone time out with "Couldn't link device",
+            // even though the backend would have finished. So reconnect instantly
+            // on 515; use a short backoff for ordinary network drops.
+            const restartRequired = code === DisconnectReason.restartRequired;
+            console.log(
+              `[WhatsApp] Connection closed (code ${code ?? "?"}) — reconnecting ${restartRequired ? "now" : "shortly"}...`,
+            );
             this.connecting = false;
             const reconnectGen = myGen;
             setTimeout(() => {
               // Skip if a logout/relink superseded this socket meanwhile.
               if (reconnectGen === this.generation) this.connect().catch(() => {});
-            }, 3000);
+            }, restartRequired ? 0 : 3000);
           }
         }
       });
