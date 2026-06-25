@@ -59,6 +59,15 @@ over, and reconnecting just loops forever fighting it.
 it's there it linked despite the on-screen error. Deployment is already a Reserved
 VM (`deploymentTarget = "vm"`), so the socket persists between requests.
 
+**UX is the real fix, not the handshake.** The backend handshake genuinely
+completes (confirmed repeatedly in deploy logs: pairing configured → 515 → `✅
+Connected as <number>`, staying linked until a *manual* Intentional Logout ~75s
+later). The user kept seeing only the phone's misleading error and tapping Logout,
+destroying the working session. So the control bot's pairing flow must POLL
+`/whatsapp/status` after handing out the code and post an authoritative "✅ linked"
+message, telling the user to ignore the phone error and NOT log out. Without that
+confirmation the user has no positive signal and assumes failure.
+
 ## Operational note: one bot token = one backend
 The Telegram control bot runs *inside* the api-server. There is a single
 `TELEGRAM_CONTROL_BOT_TOKEN`. Running the backend on Railway and Replit at the

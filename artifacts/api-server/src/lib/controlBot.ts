@@ -950,14 +950,43 @@ export function startControlBot(): void {
           flows.delete(chatId);
           await ctx.reply("⏳ Requesting pairing code…");
           const r = await api("POST", "/whatsapp/pair", { phone: text });
-          if (r.ok && r.code)
+          if (!r.ok || !r.code) {
+            await showMain(ctx, "❌ " + esc(r.message || "Couldn't get a pairing code."));
+            break;
+          }
+          await ctx.reply(
+            "🔢 Pairing code: <b>" +
+              esc(r.code) +
+              "</b>\n\nOn your phone: WhatsApp → Linked devices → Link with phone number → enter this code.\n\n" +
+              "⏳ Keep this chat open — I'll confirm here once it links. If your phone briefly shows " +
+              "<i>“Couldn't link device”</i>, ignore it and DON'T tap Logout; that message can appear " +
+              "while the connection finishes.",
+            { parse_mode: "HTML" },
+          );
+          // The phone often flashes "Couldn't link device" during the post-pairing
+          // restart even though the link actually succeeds. Poll the backend so the
+          // user gets an authoritative success signal and doesn't log out the
+          // working session prematurely.
+          let linked = false;
+          for (let i = 0; i < 30; i++) {
+            await sleep(2000);
+            const s = await api("GET", "/whatsapp/status");
+            if (s.connected) {
+              linked = true;
+              break;
+            }
+          }
+          if (linked)
+            await ctx.reply("✅ WhatsApp linked successfully — you're connected!", {
+              reply_markup: mainKeyboard(!!(ctx as any).isAdmin),
+            });
+          else
             await ctx.reply(
-              "🔢 Pairing code: <b>" +
-                esc(r.code) +
-                "</b>\n\nOn your phone: WhatsApp → Linked devices → Link with phone number → enter this code.",
+              "⚠️ Didn't see it connect yet. On your phone open WhatsApp → Linked devices and look for an " +
+                "<b>“Ubuntu (Chrome)”</b> entry — if it's there, you're already linked. Otherwise tap " +
+                "Pairing code to try again and enter the code quickly.",
               { parse_mode: "HTML", reply_markup: mainKeyboard(!!(ctx as any).isAdmin) },
             );
-          else await showMain(ctx, "❌ " + esc(r.message || "Couldn't get a pairing code."));
           break;
         }
 
