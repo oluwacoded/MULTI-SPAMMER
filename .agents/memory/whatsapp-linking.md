@@ -116,6 +116,19 @@ the device.** Baileys maps this 401 to `loggedOut`, and `isRealLogout` correctly
 wipes (reconnecting with removed creds just 401-loops). This is the real meaning of
 the user's "connects then dies after ~1 minute".
 
+**Reproduced 3×, same number, ~70s every time.** Same flagged number went `:90`→`:91`
+across attempts; each time: pairing ok → `✅ Connected` → ~69–75s later
+`401 conflict device_removed`. Tried via BOTH QR ("Can't link new devices right now")
+and pairing code ("Couldn't link device" on phone while backend connected). The
+backend is provably correct end-to-end; WhatsApp removes the device server-side.
+
+**"New phone" ≠ "new number" — the user's recurring confusion.** WhatsApp blocks by
+the ACCOUNT (phone number), not the physical handset. Swapping phones while keeping
+the same SIM/number changes nothing. The ONLY real fix for a burned/flagged number
+is a genuinely different, aged, never-link-churned WhatsApp number. No code overrides
+a server-side `device_removed`. Status-broadcast "No session found to decrypt" + a
+retry receipt right before removal is NORMAL Baileys behavior, not the cause.
+
 **Read the connected `me` id — the device counter is a churn/flag signal.** A `me`
 of `<number>:90@s.whatsapp.net` means ~90 prior link/unlink cycles on that number.
 Heavy churn + a datacenter IP (Replit/Railway) is exactly what makes WhatsApp
