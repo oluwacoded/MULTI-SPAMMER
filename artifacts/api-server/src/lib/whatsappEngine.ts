@@ -3,6 +3,8 @@ import fs from "fs";
 import path from "path";
 import qrcode from "qrcode";
 import pino from "pino";
+import { persistConfig } from "./configStore.js";
+import { handleWhatsAppUpsert } from "./whatsappCommands.js";
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const WA_AUTH_DIR = path.join(DATA_DIR, "whatsapp-auth");
@@ -13,6 +15,16 @@ function readJSON<T>(file: string, def: T): T {
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf8"));
   } catch {}
   return def;
+}
+
+// Write-through to disk AND the DB-backed app_config store so WhatsApp command
+// state (settings/notes/todos/kv) survives redeploys (the data/ dir is ephemeral).
+function writeJSON(file: string, data: any): void {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(path.join(DATA_DIR, file), JSON.stringify(data, null, 2));
+  } catch {}
+  try { persistConfig(file, data); } catch {}
 }
 function listSubdir(subdir: string): string[] {
   const dir = path.join(DATA_DIR, subdir);
@@ -44,10 +56,26 @@ class WhatsAppEngine {
   // request with the REAL content. Empty/absent answers are the main cause of
   // the "Bad MAC" cascade that corrupts a session and gets the device dropped.
   private messageStore = new Map<string, any>();
+  // Self-bot command runtime: process start (for .uptime) + WhatsApp command
+  // settings (prefix, callBlock) loaded from wa_settings.json on connect.
+  private startTime = Date.now();
+  private waSettings: any = { prefix: ".", callBlock: false };
   private campaign: any = {
     active: false, contacts: [], index: 0, message: "",
     sent: 0, failed: 0, noWhatsapp: 0, startTime: null, timer: null, log: [], options: {},
   };
+
+  // Store a message so getMessage() can answer a peer's retry request with the
+  // REAL content (prevents the Bad-MAC cascade). Bounded to the newest 1000.
+  private rememberMessage(jid: string, id: string, message: any): void {
+    if (!jid || !id) return;
+    this.messageStore.set(`${jid}::${id}`, message);
+    while (this.messageStore.size > 1000) {
+      const oldest = this.messageStore.keys().next().value;
+      if (oldest === undefined) break;
+      this.messageStore.delete(oldest);
+    }
+  }
 
   async connect(opts: { fresh?: boolean } = {}): Promise<void> {
     if (opts.fresh) {
@@ -76,7 +104,7 @@ class WhatsAppEngine {
     try {
       const baileys: any = await import("@whiskeysockets/baileys");
       const makeWASocket = baileys.default || baileys.makeWASocket;
-      const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, proto } = baileys;
+      const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, proto, downloadMediaMessage } = baileys;
 
       if (!fs.existsSync(WA_AUTH_DIR)) fs.mkdirSync(WA_AUTH_DIR, { recursive: true });
       const { state, saveCreds } = await useMultiFileAuthState(WA_AUTH_DIR);
@@ -241,6 +269,46 @@ class WhatsAppEngine {
             // Skip if a logout/relink superseded this socket meanwhile.
             if (reconnectGen === this.generation) this.connect().catch(() => {});
           }, delay);
+        }
+      });
+
+      // ── Self-bot dot-command responder ──────────────────────────────────────
+      // Load command settings fresh (picks up DB-restored values on reconnect).
+      this.waSettings = readJSON("wa_settings.json", { prefix: ".", callBlock: false });
+      sock.ev.on("messages.upsert", async (ev: any) => {
+        if (isStale()) return;
+        try {
+          await handleWhatsAppUpsert({
+            sock,
+            ev,
+            settings: this.waSettings,
+            writeJSON,
+            readJSON,
+            rememberMessage: (jid: string, id: string, message: any) => this.rememberMessage(jid, id, message),
+            downloadMediaMessage,
+            startTime: this.startTime,
+          });
+        } catch (e: any) {
+          console.log("[WhatsApp] upsert handler error:", e?.message || e);
+        }
+      });
+
+      // ── Call auto-reject (when .call on) ─────────────────────────────────────
+      // Whole body wrapped: an unexpected Baileys payload must never throw an
+      // unhandled rejection that could take down the single VM process.
+      sock.ev.on("call", async (calls: any[]) => {
+        try {
+          if (isStale() || !this.waSettings?.callBlock) return;
+          for (const c of calls || []) {
+            if (c?.status !== "offer") continue;
+            try {
+              await sock.rejectCall(c.id, c.from);
+              const m = await sock.sendMessage(c.from, { text: "📵 sorry, calls are auto-rejected here. send a message instead." });
+              if (m?.key?.id) this.rememberMessage(m.key.remoteJid || c.from, m.key.id, m.message || { conversation: "📵" });
+            } catch {}
+          }
+        } catch (e: any) {
+          console.log("[WhatsApp] call handler error:", e?.message || e);
         }
       });
     } catch (e: any) {
