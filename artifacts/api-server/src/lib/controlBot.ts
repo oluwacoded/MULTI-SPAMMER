@@ -229,7 +229,10 @@ async function waStatusText(): Promise<string> {
   const camp = s.campaign?.active
     ? `\n📣 Campaign: ${s.campaign.sent}/${s.campaign.total} (${s.campaign.percent}%)`
     : "";
-  return `📱 <b>WhatsApp</b>\n${state}${camp}`;
+  // Surface the last failure (e.g. WhatsApp removed the device) when not linked,
+  // so the reason is visible here — the Telegram bot is the main control surface.
+  const err = !s.connected && !s.connecting && s.lastError ? `\n⚠️ ${esc(s.lastError)}` : "";
+  return `📱 <b>WhatsApp</b>\n${state}${camp}${err}`;
 }
 async function gmStatusText(): Promise<string> {
   const s = await api("GET", "/gmail/campaign/status");

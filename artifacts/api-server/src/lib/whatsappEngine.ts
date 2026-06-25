@@ -40,6 +40,10 @@ class WhatsAppEngine {
   private hasEverConnected = false;
   private consecutive401s = 0;
   private reconnectCount = 0;
+  // Cache of recently-sent messages so getMessage() can answer a peer's retry
+  // request with the REAL content. Empty/absent answers are the main cause of
+  // the "Bad MAC" cascade that corrupts a session and gets the device dropped.
+  private messageStore = new Map<string, any>();
   private campaign: any = {
     active: false, contacts: [], index: 0, message: "",
     sent: 0, failed: 0, noWhatsapp: 0, startTime: null, timer: null, log: [], options: {},
@@ -72,7 +76,7 @@ class WhatsAppEngine {
     try {
       const baileys: any = await import("@whiskeysockets/baileys");
       const makeWASocket = baileys.default || baileys.makeWASocket;
-      const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore } = baileys;
+      const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, proto } = baileys;
 
       if (!fs.existsSync(WA_AUTH_DIR)) fs.mkdirSync(WA_AUTH_DIR, { recursive: true });
       const { state, saveCreds } = await useMultiFileAuthState(WA_AUTH_DIR);
@@ -84,6 +88,8 @@ class WhatsAppEngine {
       if (myGen !== this.generation) return;
 
       const signalLogger = pino({ level: "silent" });
+      // Randomise the heartbeat so it is never a fixed, bot-like interval.
+      const keepAliveMs = 20000 + Math.floor(Math.random() * 10000); // 20–30s
       const sock = makeWASocket({
         version,
         // Wrap the file-backed key store in Baileys' in-memory cacheable wrapper.
@@ -97,13 +103,27 @@ class WhatsAppEngine {
         printQRInTerminal: false,
         markOnlineOnConnect: false,
         syncFullHistory: false,
-        // Match the fingerprint the original (working) bot used.
+        // Match the fingerprint + full client config of the original (working)
+        // bot. A linked device that does not present like a real, healthy
+        // WhatsApp Web client is exactly what WhatsApp removes shortly after
+        // pairing ("device_removed"), so mirror the original as closely as we can.
         browser: Browsers.windows("Chrome"),
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: keepAliveMs,
         retryRequestDelayMs: 250,
         maxMsgRetryCount: 5,
+        generateHighQualityLinkPreview: false,
         emitOwnEvents: false,
+        fireInitQueries: true,
+        transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
+        // Answer a peer's "retry this message" with the actual content. Returning
+        // empty here is what cascades into "Bad MAC" session corruption.
+        getMessage: async (key: any) => {
+          const stored = this.messageStore.get(`${key.remoteJid}::${key.id}`);
+          if (stored) return stored;
+          return proto.Message.fromObject({});
+        },
       });
 
       // Re-check before publishing the socket; if superseded, discard it.
@@ -172,7 +192,17 @@ class WhatsAppEngine {
           const isRealLogout = (isLoggedOut && this.hasEverConnected) || credsAreDead;
 
           if (isRealLogout) {
-            console.log(`[WhatsApp] Real logout (credsDead=${credsAreDead}) — clearing session`);
+            // Distinguish WhatsApp REMOVING an already-linked device (the real
+            // production failure: 401 conflict/device_removed ~1 min after a
+            // successful connect) from dead/rejected creds, so the dashboard
+            // shows the user an actionable reason instead of a raw stack trace.
+            if (isLoggedOut && this.hasEverConnected && !credsAreDead) {
+              this.lastError =
+                "WhatsApp unlinked this device (removed from your phone's Linked Devices, or dropped by WhatsApp). Re-pair, and first remove old/unused linked devices on your phone.";
+            } else if (credsAreDead) {
+              this.lastError = "WhatsApp kept rejecting the saved login — session cleared. Re-pair to link again.";
+            }
+            console.log(`[WhatsApp] Real logout (credsDead=${credsAreDead}, code ${code ?? "?"}) — clearing session`);
             this._clearAuth();
             this.qrDataUrl = null;
             return;
@@ -258,6 +288,9 @@ class WhatsAppEngine {
     this.reconnectCount = 0;
     this.me = null;
     this.socketReady = false;
+    // Drop cached retry content — it belongs to the old (now-wiped) session and
+    // must not leak into a relink, possibly to a different WhatsApp number.
+    this.messageStore.clear();
   }
 
   async logout(): Promise<void> {
@@ -371,7 +404,21 @@ class WhatsAppEngine {
           entry.at = Date.now();
         } else {
           const personal = message.replace(/\{name\}/gi, contact.name || "").replace(/\{phone\}/gi, contact.phone);
-          await this.sock.sendMessage(jid, { text: personal });
+          const sent = await this.sock.sendMessage(jid, { text: personal });
+          // Keep the sent content so getMessage() can satisfy a peer retry and
+          // avoid the Bad-MAC cascade. Key by the JID WhatsApp actually stamped on
+          // the message (PN/LID normalization can differ from the one we sent to),
+          // and bound the store so it can't grow forever.
+          if (sent?.key?.id && sent?.message) {
+            const storeJid = sent.key.remoteJid || jid;
+            this.messageStore.set(`${storeJid}::${sent.key.id}`, sent.message);
+            if (storeJid !== jid) this.messageStore.set(`${jid}::${sent.key.id}`, sent.message);
+            while (this.messageStore.size > 1000) {
+              const oldest = this.messageStore.keys().next().value;
+              if (oldest === undefined) break;
+              this.messageStore.delete(oldest);
+            }
+          }
           this.campaign.sent++;
           entry.status = "sent";
           entry.at = Date.now();

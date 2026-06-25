@@ -106,6 +106,42 @@ Reading signal keys from disk on every decrypt races with `creds.update` writes 
 makes libsignal reject the MAC ("Bad MAC"), dropping the session mid-handshake.
 Match the original's `browser: Browsers.windows("Chrome")` fingerprint.
 
+## DEFINITIVE death cause: WhatsApp REMOVES the device after a good connect
+**Confirmed in production deploy logs**, not theory: pairing succeeds → `✅
+Connected as <number>:<deviceId>@s.whatsapp.net` → the socket stays up ~1 min →
+WhatsApp sends `stream errored code 401` with reasonNode `{tag:"conflict",
+attrs:{type:"device_removed"}}` → session wiped. So the engine is NOT failing the
+handshake and is NOT dropping the link itself — **WhatsApp (or the phone) unlinks
+the device.** Baileys maps this 401 to `loggedOut`, and `isRealLogout` correctly
+wipes (reconnecting with removed creds just 401-loops). This is the real meaning of
+the user's "connects then dies after ~1 minute".
+
+**Read the connected `me` id — the device counter is a churn/flag signal.** A `me`
+of `<number>:90@s.whatsapp.net` means ~90 prior link/unlink cycles on that number.
+Heavy churn + a datacenter IP (Replit/Railway) is exactly what makes WhatsApp
+auto-remove freshly linked devices within ~1 min. No code change overrides a
+server-side device removal; the levers are operational:
+- Remove old/stale linked devices on the phone (WhatsApp → Linked Devices) before re-linking.
+- Use a less-churned / aged number to test; let a flagged number rest (hours).
+- Expect tighter limits from datacenter IPs regardless of code.
+
+**Code mitigation = look like a real, healthy WhatsApp Web client.** The user's
+original (working) bot stayed linked, so mirror its FULL socket config, not just the
+browser string. Beyond `makeCacheableSignalKeyStore` + `Browsers.windows("Chrome")`,
+set: `keepAliveIntervalMs` (jittered 20–30s, not a fixed bot-like beat),
+`fireInitQueries:true`, `generateHighQualityLinkPreview:false`,
+`transactionOpts:{maxCommitRetries:10,delayBetweenTriesMs:3000}`, and a REAL
+`getMessage` backed by a bounded in-memory store of sent messages (key by the JID
+WhatsApp stamps on the send: `sent.key.remoteJid||jid` + `::id`; fall back to
+`proto.Message.fromObject({})`). The empty-getMessage default is what cascades into
+"Bad MAC" session corruption. Clear that store in `_clearAuth()` so retry content
+never leaks across relinks/numbers. Surface `lastError` (e.g. the device_removed
+message) in the Telegram control bot's status text — it's the user's main UI.
+
+**Fixes only reach the live VM on REPUBLISH.** Repeatedly the deploy logs showed the
+OLD code (`Ubuntu` fingerprint) long after fixes were committed. End every WhatsApp
+round by telling the user to republish, then re-pair on a clean number.
+
 ## Operational note: one bot token = one backend
 The Telegram control bot runs *inside* the api-server. There is a single
 `TELEGRAM_CONTROL_BOT_TOKEN`. Running the backend on Railway and Replit at the
